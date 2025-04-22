@@ -1,4 +1,0 @@
-python-telegram-bot==20.3
-instaloader
-aiosqlite
-nest_asyncio
