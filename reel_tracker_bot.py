@@ -214,7 +214,7 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rows = await c1.fetchall()
     allowed = [h[0].lstrip('@').lower() for h in rows]
     if not allowed:
-        return await update.message.reply_text("⚠️ No account assigned. Ask admin.")
+        return await update.message.reply_text("⚠️ No account assigned. Ask admin to add your account.")
     # fetch
     L = instaloader.Instaloader()
     try:
@@ -252,7 +252,7 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"✅ @{post.owner_username} submitted ({views0} views).")
             await log_to_group(context.bot, f"User @{update.effective_user.username} submitted {code}")
         except aiosqlite.IntegrityError:
-            await update.message.reply_text("⚠️ Already submitted.")
+            await update.message.reply_text("⚠️ Reel Already submitted.")
 
 # ── /stats ──────────────────────────────────────────────────────────────────────
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -261,7 +261,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         c1 = await db.execute("SELECT id, username FROM reels WHERE user_id=?", (uid,))
         reels = await c1.fetchall()
     if not reels:
-        return await update.message.reply_text("📭 No reels tracked.")
+        return await update.message.reply_text("📭 No reels Found.")
     total, users = 0, set()
     details = []
     async with aiosqlite.connect(DB_FILE) as db:
@@ -282,7 +282,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Total videos: {len(reels)}",
         f"• Total views: {total}",
         f"• Accounts linked: {', '.join(users)}",
-        "Reels (highest→lowest):"
+        "Reels:"
     ]
     for i, (_, code, cnt) in enumerate(details, 1):
         text.append(f"{i}. https://instagram.com/reel/{code} – {cnt} views")
@@ -425,13 +425,13 @@ if __name__ == "__main__":
 
     # User commands
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("addaccount", addaccount))
-    app.add_handler(CommandHandler("userstats", userstats))
     app.add_handler(CommandHandler("submit", submit))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("remove", remove))
 
     # Admin commands
+    app.add_handler(CommandHandler("addaccount", addaccount))
+    app.add_handler(CommandHandler("userstats", userstats))
     app.add_handler(CommandHandler("adminstats", adminstats))
     app.add_handler(CommandHandler("auditlog", auditlog))
     app.add_handler(CommandHandler("broadcast", broadcast))
