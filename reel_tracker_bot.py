@@ -130,14 +130,18 @@ async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def main():
     await init_db()
     app = ApplicationBuilder().token(TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("submit", submit))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("remove", remove))
+
     asyncio.create_task(track_views_loop())
     print("🤖 Bot is running...")
-    await app.run_polling()
 
+    # ✅ Don't close the running loop (Fix for Render)
+    await app.run_polling(close_loop=False)
+    
 if __name__ == "__main__":
     nest_asyncio.apply()
     asyncio.get_event_loop().run_until_complete(main())
