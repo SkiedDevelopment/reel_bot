@@ -7,68 +7,29 @@ import aiosqlite
 import traceback
 from datetime import datetime
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    ConversationHandler,
-    ContextTypes,
-    filters,
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 # ── Patch asyncio for hosted envs ───────────────────────────────────────────────
 nest_asyncio.apply()
 
-# ── Config from ENV ─────────────────────────────────────────────────────────────
-TOKEN         = os.getenv("TOKEN")
-ADMIN_ID      = os.getenv("ADMIN_ID")
-WEBHOOK_URL   = os.getenv("WEBHOOK_URL")   # e.g. "https://your-app.onrender.com/"
-LOG_GROUP_ID  = os.getenv("LOG_GROUP_ID")  # e.g. "-1001234567890"
-PORT          = int(os.getenv("PORT", "10000"))
-DB_FILE       = "reels.db"
-
-# Conversation states
-SUBMIT_LINK   = 0
-REMOVE_LINK   = 1
-
-# ── Database Init ────────────────────────────────────────────────────────────────
-async def init_db():
-    async with aiosqlite.connect(DB_FILE) as db:
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY
-            )""")
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS reels (
-                id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id   INTEGER,
-                shortcode TEXT,
-                username  TEXT,
-                UNIQUE(user_id, shortcode)
-            )""")
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS views (
-                reel_id   INTEGER,
-                timestamp TEXT,
-                count     INTEGER
-            )""")
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS audit (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id      INTEGER,
-                action       TEXT,
-                shortcode    TEXT,
-                timestamp    TEXT
-            )""")
-        await db.commit()
+# ── Configuration from ENV ──────────────────────────────────────────────────────
+TOKEN        = os.getenv("TOKEN")
+ADMIN_ID     = os.getenv("ADMIN_ID")
+LOG_GROUP_ID = os.getenv("LOG_GROUP_ID")   # e.g. "-1001234567890"
+WEBHOOK_URL  = os.getenv("WEBHOOK_URL")    # e.g. "https://your-app.onrender.com/"
+PORT         = int(os.getenv("PORT", "10000"))
+DB_FILE      = "reels.db"
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────
-def extract_shortcode(link: str) -> str | None:
+def extract_shortcode(link: str) -> str|None:
     m = re.search(r"instagram\.com/reel/([^/?]+)", link)
     return m.group(1) if m else None
 
 def is_admin(uid: int) -> bool:
-    return ADMIN_ID and str(uid) == str(ADMIN_ID)
+    try:
+        return ADMIN_ID is not None and int(uid) == int(ADMIN_ID)
+    except:
+        return False
 
 async def log_to_group(bot, text: str):
     if LOG_GROUP_ID:
@@ -77,63 +38,87 @@ async def log_to_group(bot, text: str):
         except:
             pass
 
-# ── View Tracking ────────────────────────────────────────────────────────────────
+# ── Database Initialization ─────────────────────────────────────────────────────
+async def init_db():
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute("""CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY
+        )""")
+        await db.execute("""CREATE TABLE IF NOT EXISTS reels (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id   INTEGER,
+            shortcode TEXT,
+            username  TEXT,
+            UNIQUE(user_id, shortcode)
+        )""")
+        await db.execute("""CREATE TABLE IF NOT EXISTS views (
+            reel_id   INTEGER,
+            timestamp TEXT,
+            count     INTEGER
+        )""")
+        await db.execute("""CREATE TABLE IF NOT EXISTS audit (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id      INTEGER,
+            action       TEXT,
+            shortcode    TEXT,
+            timestamp    TEXT
+        )""")
+        await db.commit()
+
+# ── View Tracking Loop ──────────────────────────────────────────────────────────
 async def track_all_views():
     L = instaloader.Instaloader()
     async with aiosqlite.connect(DB_FILE) as db:
-        async with db.execute("SELECT id, shortcode FROM reels") as cur:
-            for reel_id, shortcode in await cur.fetchall():
-                for attempt in range(3):
-                    try:
-                        post = instaloader.Post.from_shortcode(L.context, shortcode)
-                        now   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        views = post.video_view_count
-                        await db.execute(
-                            "INSERT INTO views (reel_id, timestamp, count) VALUES (?, ?, ?)",
-                            (reel_id, now, views)
-                        )
-                        await db.commit()
-                        break
-                    except Exception as e:
-                        print(f"[Retry {attempt+1}] {shortcode} error: {e}")
-                        await asyncio.sleep(2)
+        cursor = await db.execute("SELECT id, shortcode FROM reels")
+        for reel_id, shortcode in await cursor.fetchall():
+            for attempt in range(3):
+                try:
+                    post = instaloader.Post.from_shortcode(L.context, shortcode)
+                    now   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    views = post.video_view_count
+                    await db.execute(
+                        "INSERT INTO views (reel_id, timestamp, count) VALUES (?, ?, ?)",
+                        (reel_id, now, views)
+                    )
+                    await db.commit()
+                    break
+                except Exception as e:
+                    print(f"[Retry {attempt+1}] {shortcode} error: {e}")
+                    await asyncio.sleep(2)
 
 async def track_loop():
     await asyncio.sleep(5)
     while True:
         await track_all_views()
-        await asyncio.sleep(12 * 3600)  # every 12h
+        await asyncio.sleep(12*3600)  # 12 hours
 
 # ── Command: /start ─────────────────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Welcome!\n"
-        "/submit → track a reel\n"
-        "/stats  → view your stats\n"
-        "/remove → delete a reel\n"
-        "Admin: /adminstats, /broadcast, /auditlog"
+        "/submit <URL> → track a reel\n"
+        "/stats        → your stats\n"
+        "/remove <URL> → delete a reel\n"
+        "Admin: /adminstats, /auditlog, /broadcast, /deleteuser, /deletereel"
     )
 
-# ── /submit Flow ────────────────────────────────────────────────────────────────
-async def submit_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("Send me the public Instagram *Reel* URL:")
-    return SUBMIT_LINK
-
-async def submit_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    link = update.message.text.strip()
+# ── Command: /submit <URL> ───────────────────────────────────────────────────────
+async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        return await update.message.reply_text("Usage: /submit <Instagram Reel URL>")
+    link = context.args[0]
     code = extract_shortcode(link)
-    uid  = update.effective_user.id
     if not code:
-        await update.message.reply_text("❌ Invalid Reel URL.")
-        return ConversationHandler.END
+        return await update.message.reply_text("❌ Invalid Reel URL.")
 
+    # fetch post
     L = instaloader.Instaloader()
     try:
         post = instaloader.Post.from_shortcode(L.context, code)
     except:
-        await update.message.reply_text("⚠️ Couldn't fetch—ensure it's public.")
-        return ConversationHandler.END
+        return await update.message.reply_text("⚠️ Failed to fetch—make sure it’s public.")
 
+    uid      = update.effective_user.id
     username = post.owner_username
     views0   = post.video_view_count
 
@@ -145,63 +130,60 @@ async def submit_received(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 (uid, code, username)
             )
             await db.execute(
-                "INSERT INTO views (reel_id, timestamp, count) "
-                "VALUES ((SELECT id FROM reels WHERE user_id=? AND shortcode=?), ?, ?)",
+                "INSERT INTO views (reel_id, timestamp, count) VALUES ("
+                "(SELECT id FROM reels WHERE user_id=? AND shortcode=?), ?, ?)",
                 (uid, code, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), views0)
             )
-            # audit log
             await db.execute(
-                "INSERT INTO audit (user_id, action, shortcode, timestamp) VALUES (?, 'submitted', ?, ?)",
+                "INSERT INTO audit (user_id, action, shortcode, timestamp) "
+                "VALUES (?, 'submitted', ?, ?)",
                 (uid, code, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
             )
             await db.commit()
             await update.message.reply_text(f"✅ @{username} submitted ({views0} views).")
-            # log to group
-            await log_to_group(context.bot,
-                f"📥 User `{uid}` submitted Reel `{code}` (@{username})"
-            )
+            await log_to_group(context.bot, f"📥 User `{uid}` submitted Reel `{code}` (@{username})")
         except aiosqlite.IntegrityError:
-            await update.message.reply_text("⚠️ Already submitted.")
-    return ConversationHandler.END
+            return await update.message.reply_text("⚠️ You've already submitted that Reel.")
 
-# ── /stats ─────────────────────────────────────────────────────────────────────
+# ── Command: /stats ─────────────────────────────────────────────────────────────
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     async with aiosqlite.connect(DB_FILE) as db:
-        cur   = await db.execute("SELECT id, username FROM reels WHERE user_id=?", (uid,))
-        reels = await cur.fetchall()
+        cursor = await db.execute("SELECT id, username FROM reels WHERE user_id=?", (uid,))
+        reels = await cursor.fetchall()
+
     if not reels:
-        return await update.message.reply_text("📭 No reels yet.")
+        return await update.message.reply_text("📭 No reels tracked yet.")
 
     total, users = 0, set()
     async with aiosqlite.connect(DB_FILE) as db:
         for rid, uname in reels:
             users.add(uname)
             vcur = await db.execute(
-                "SELECT count FROM views WHERE reel_id=? ORDER BY timestamp DESC LIMIT 1", (rid,)
+                "SELECT count FROM views WHERE reel_id=? ORDER BY timestamp DESC LIMIT 1",
+                (rid,)
             )
             row = await vcur.fetchone()
             if row:
                 total += row[0]
 
-    await update.message.reply_text(
+    text = (
         f"📊 Videos: {len(reels)}\n"
         f"📈 Views:  {total}\n"
         f"👤 Accounts: {', '.join(users)}"
     )
+    await update.message.reply_text(text)
+    await log_to_group(context.bot, f"📊 Stats for User `{uid}`:\n{text}")
 
-# ── /remove Flow ────────────────────────────────────────────────────────────────
-async def remove_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("🗑️ Send the full Instagram Reel URL to remove:")
-    return REMOVE_LINK
-
-async def remove_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    link = update.message.text.strip()
+# ── Command: /remove <URL> ──────────────────────────────────────────────────────
+async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        return await update.message.reply_text("Usage: /remove <Instagram Reel URL>")
+    link = context.args[0]
     code = extract_shortcode(link)
     uid  = update.effective_user.id
     if not code:
-        await update.message.reply_text("❌ Invalid Reel URL.")
-        return ConversationHandler.END
+        return await update.message.reply_text("❌ Invalid Reel URL.")
 
     async with aiosqlite.connect(DB_FILE) as db:
         cur = await db.execute(
@@ -209,15 +191,13 @@ async def remove_received(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         row = await cur.fetchone()
         if not row:
-            await update.message.reply_text("❌ You never submitted that Reel.")
-            return ConversationHandler.END
-
+            return await update.message.reply_text("❌ You never submitted that Reel.")
         reel_id = row[0]
         await db.execute("DELETE FROM views WHERE reel_id=?", (reel_id,))
         await db.execute("DELETE FROM reels WHERE id=?", (reel_id,))
-        # audit
         await db.execute(
-            "INSERT INTO audit (user_id, action, shortcode, timestamp) VALUES (?, 'removed', ?, ?)",
+            "INSERT INTO audit (user_id, action, shortcode, timestamp) "
+            "VALUES (?, 'removed', ?, ?)",
             (uid, code, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         )
         # cleanup user if no more reels
@@ -227,14 +207,12 @@ async def remove_received(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await db.commit()
 
     await update.message.reply_text(f"✅ Removed `{code}`.")
-    await log_to_group(context.bot,
-        f"📤 User `{uid}` removed Reel `{code}`"
-    )
-    return ConversationHandler.END
+    await log_to_group(context.bot, f"📤 User `{uid}` removed Reel `{code}`")
 
-# ── Admin: /adminstats ─────────────────────────────────────────────────────────
+# ── Admin Commands ─────────────────────────────────────────────────────────────
 async def adminstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
+    uid = update.effective_user.id
+    if not is_admin(uid):
         return
     async with aiosqlite.connect(DB_FILE) as db:
         ucur = await db.execute("SELECT COUNT(*) FROM users")
@@ -249,81 +227,85 @@ async def adminstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🛠️ Admin Stats:\n"
         f"• Users: {total_users}\n"
         f"• Reels: {total_reels}\n\n"
-        "Top IG Accounts:\n" +
+        "Top Accounts:\n" +
         "\n".join(f"- @{u}: {c}" for u, c in tops)
     )
     await update.message.reply_text(msg)
+    await log_to_group(context.bot, f"🛠️ Admin `{uid}` viewed stats.")
 
-# ── Admin: /auditlog ────────────────────────────────────────────────────────────
 async def auditlog(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
+    uid = update.effective_user.id
+    if not is_admin(uid):
         return
-    entries = []
+    lines = []
     async with aiosqlite.connect(DB_FILE) as db:
-        cur = await db.execute("SELECT user_id, action, shortcode, timestamp FROM audit ORDER BY id DESC LIMIT 20")
-        for uid, act, sc, ts in await cur.fetchall():
-            entries.append(f"{ts} — User {uid} {act} `{sc}`")
-    await update.message.reply_text("📋 Recent Activity:\n" + "\n".join(entries))
+        cur = await db.execute(
+            "SELECT user_id, action, shortcode, timestamp FROM audit ORDER BY id DESC LIMIT 20"
+        )
+        for u,a,s,t in await cur.fetchall():
+            lines.append(f"{t} — User {u} {a} `{s}`")
+    msg = "📋 Recent Activity:\n" + "\n".join(lines)
+    await update.message.reply_text(msg)
+    await log_to_group(context.bot, f"🗒️ Admin `{uid}` viewed audit log.")
 
-# ── Admin: /broadcast, /deleteuser, /deletereel (unchanged) ─────────────────────
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id) or not context.args:
+    uid = update.effective_user.id
+    if not is_admin(uid) or not context.args:
         return
     text = "📢 " + " ".join(context.args)
     async with aiosqlite.connect(DB_FILE) as db:
         cur = await db.execute("SELECT user_id FROM users")
-        for (uid,) in await cur.fetchall():
-            try: await context.bot.send_message(chat_id=uid, text=text)
-            except: pass
+        for (u,) in await cur.fetchall():
+            try:
+                await context.bot.send_message(chat_id=u, text=text)
+            except:
+                pass
     await update.message.reply_text("✅ Broadcast sent.")
+    await log_to_group(context.bot, f"📣 Admin `{uid}` broadcasted.")
 
 async def deleteuser(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id) or not context.args:
+    uid = update.effective_user.id
+    if not is_admin(uid) or not context.args:
         return
-    targ = context.args[0]
+    target = context.args[0]
     async with aiosqlite.connect(DB_FILE) as db:
-        await db.execute("DELETE FROM views WHERE reel_id IN (SELECT id FROM reels WHERE user_id=?)", (targ,))
-        await db.execute("DELETE FROM reels WHERE user_id=?", (targ,))
-        await db.execute("DELETE FROM users WHERE user_id=?", (targ,))
+        await db.execute("DELETE FROM views WHERE reel_id IN (SELECT id FROM reels WHERE user_id=?)", (target,))
+        await db.execute("DELETE FROM reels WHERE user_id=?", (target,))
+        await db.execute("DELETE FROM users WHERE user_id=?", (target,))
         await db.commit()
-    await update.message.reply_text(f"🧹 Deleted user {targ}.")
+    await update.message.reply_text(f"🧹 Deleted user {target}.")
+    await log_to_group(context.bot, f"🗑️ Admin `{uid}` deleted user {target}.")
 
 async def deletereel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id) or not context.args:
+    uid = update.effective_user.id
+    if not is_admin(uid) or not context.args:
         return
-    sc = context.args[0]
+    code = context.args[0]
     async with aiosqlite.connect(DB_FILE) as db:
-        await db.execute("DELETE FROM views WHERE reel_id IN (SELECT id FROM reels WHERE shortcode=?)", (sc,))
-        await db.execute("DELETE FROM reels WHERE shortcode=?", (sc,))
+        await db.execute("DELETE FROM views WHERE reel_id IN (SELECT id FROM reels WHERE shortcode=?)", (code,))
+        await db.execute("DELETE FROM reels WHERE shortcode=?", (code,))
         await db.commit()
-    await update.message.reply_text(f"✅ Deleted reel `{sc}`.")
+    await update.message.reply_text(f"✅ Deleted reel `{code}`.")
+    await log_to_group(context.bot, f"🗑️ Admin `{uid}` deleted Reel `{code}`.")
 
-# ── Error Handler ───────────────────────────────────────────────────────────────
+# ── Global Error Handler ───────────────────────────────────────────────────────
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     tb = "".join(traceback.format_exception(None, context.error, context.error.__traceback__))
     text = f"❗️ *Error*\n<pre>{tb}</pre>"
     await log_to_group(context.bot, text)
 
-# ── Bootstrap & Webhook Startup ─────────────────────────────────────────────────
+# ── Bootstrap & Webhook Start ───────────────────────────────────────────────────
 if __name__ == "__main__":
     asyncio.get_event_loop().run_until_complete(init_db())
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # user handlers
+    # user commands
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(ConversationHandler(
-        entry_points=[CommandHandler("submit", submit_start)],
-        states={ SUBMIT_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, submit_received)] },
-        fallbacks=[]
-    ))
+    app.add_handler(CommandHandler("submit", submit))
     app.add_handler(CommandHandler("stats", stats))
-    app.add_handler(ConversationHandler(
-        entry_points=[CommandHandler("remove", remove_start)],
-        states={ REMOVE_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_received)] },
-        fallbacks=[]
-    ))
+    app.add_handler(CommandHandler("remove", remove))
 
-    # admin handlers
+    # admin commands
     app.add_handler(CommandHandler("adminstats", adminstats))
     app.add_handler(CommandHandler("auditlog", auditlog))
     app.add_handler(CommandHandler("broadcast", broadcast))
