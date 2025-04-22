@@ -11,25 +11,26 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     ConversationHandler,
-    filters,
     ContextTypes,
+    filters,
 )
 
-# Patch asyncio so run_webhook/run_polling works in Render
+# ── Patch asyncio for hosted envs ───────────────────────────────────────────────
 nest_asyncio.apply()
 
-# States for our conversations
-SUBMIT_LINK   = 0
-REMOVE_SELECT = 1
-
-# Configuration from ENV
+# ── Config from ENV ─────────────────────────────────────────────────────────────
 TOKEN       = os.getenv("TOKEN")
 ADMIN_ID    = os.getenv("ADMIN_ID")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g. "https://your-app.onrender.com/"
 PORT        = int(os.getenv("PORT", "10000"))
 DB_FILE     = "reels.db"
 
+# Conversation states
+SUBMIT_LINK = 0
+REMOVE_LINK = 1
 
+
+# ── Database Init ────────────────────────────────────────────────────────────────
 async def init_db():
     async with aiosqlite.connect(DB_FILE) as db:
         await db.execute("""
@@ -52,14 +53,20 @@ async def init_db():
             )""")
         await db.commit()
 
-def extract_shortcode(link: str) -> str|None:
+
+# ── Helpers ─────────────────────────────────────────────────────────────────────
+def extract_shortcode(link: str) -> str | None:
     m = re.search(r"instagram\.com/reel/([^/?]+)", link)
     return m.group(1) if m else None
 
 def is_admin(user_id: int) -> bool:
-    return ADMIN_ID and str(user_id) == str(ADMIN_ID)
+    try:
+        return ADMIN_ID is not None and int(user_id) == int(ADMIN_ID)
+    except:
+        return False
 
-# --- Tracking loop (unchanged) ---
+
+# ── View Tracking Loop ──────────────────────────────────────────────────────────
 async def track_all_views():
     L = instaloader.Instaloader()
     async with aiosqlite.connect(DB_FILE) as db:
@@ -81,13 +88,14 @@ async def track_all_views():
                         await asyncio.sleep(2)
 
 async def track_loop():
+    # slight startup delay
     await asyncio.sleep(5)
     while True:
         await track_all_views()
-        await asyncio.sleep(12 * 3600)
+        await asyncio.sleep(12 * 3600)  # 12 hours
 
 
-# --- Handlers ---
+# ── Command Handlers ────────────────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Welcome!\n"
@@ -97,32 +105,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Admin commands available if you’re admin."
     )
 
-# 1) /submit conversation entry
+
+# ── /submit Conversation ────────────────────────────────────────────────────────
 async def submit_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("Send me the **public Instagram reel** URL:")
+    await update.message.reply_text("Send me the public Instagram *Reel* URL:")
     return SUBMIT_LINK
 
-# 2) handle the link
 async def submit_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     link = update.message.text.strip()
     code = extract_shortcode(link)
     if not code:
-        await update.message.reply_text("❌ That doesn’t look like a reel URL. Try /submit again.")
+        await update.message.reply_text("❌ Invalid Reel URL. Please try /submit again.")
         return ConversationHandler.END
 
-    # fetch data
     L = instaloader.Instaloader()
     try:
         post = instaloader.Post.from_shortcode(L.context, code)
     except Exception:
-        await update.message.reply_text("⚠️ Failed to fetch reel. Make sure it’s **public**.")
+        await update.message.reply_text("⚠️ Couldn't fetch—make sure it's public.")
         return ConversationHandler.END
 
     uid      = update.effective_user.id
     username = post.owner_username
     views0   = post.video_view_count
 
-    # store in DB
     async with aiosqlite.connect(DB_FILE) as db:
         await db.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (uid,))
         try:
@@ -136,17 +142,19 @@ async def submit_received(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 (uid, code, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), views0)
             )
             await db.commit()
-            await update.message.reply_text(f"✅ @{username} submitted with {views0} views!")
+            await update.message.reply_text(f"✅ @{username} submitted ({views0} views).")
         except aiosqlite.IntegrityError:
-            await update.message.reply_text("⚠️ You already submitted that reel.")
+            await update.message.reply_text("⚠️ You've already submitted that Reel.")
     return ConversationHandler.END
 
-# /stats (unchanged)
+
+# ── /stats Command ──────────────────────────────────────────────────────────────
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     async with aiosqlite.connect(DB_FILE) as db:
         cur   = await db.execute("SELECT id, username FROM reels WHERE user_id=?", (uid,))
         reels = await cur.fetchall()
+
     if not reels:
         return await update.message.reply_text("📭 No reels tracked yet.")
 
@@ -155,7 +163,8 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for rid, uname in reels:
             users.add(uname)
             vcur = await db.execute(
-                "SELECT count FROM views WHERE reel_id=? ORDER BY timestamp DESC LIMIT 1", (rid,)
+                "SELECT count FROM views WHERE reel_id=? ORDER BY timestamp DESC LIMIT 1",
+                (rid,)
             )
             row = await vcur.fetchone()
             if row:
@@ -167,49 +176,123 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👤 Accounts: {', '.join(users)}"
     )
 
-# 1) /remove conversation entry
-async def remove_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    uid = update.effective_user.id
-    async with aiosqlite.connect(DB_FILE) as db:
-        cur   = await db.execute("SELECT shortcode, username FROM reels WHERE user_id=?", (uid,))
-        reels = await cur.fetchall()
 
-    if not reels:
-        await update.message.reply_text("❌ You have no reels to remove.")
+# ── /remove Conversation ───────────────────────────────────────────────────────
+async def remove_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("🗑️ Send the *full* Reel URL to remove:")
+    return REMOVE_LINK
+
+async def remove_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    link = update.message.text.strip()
+    code = extract_shortcode(link)
+    uid  = update.effective_user.id
+
+    if not code:
+        await update.message.reply_text("❌ Invalid Reel URL. Cancelled.")
         return ConversationHandler.END
 
-    text = "🗑️ Your reels:\n" + "\n".join(f"- {sc} (@{u})" for sc,u in reels)
-    text += "\n\nReply with the **shortcode** to delete:"
-    await update.message.reply_text(text)
-    return REMOVE_SELECT
-
-# 2) handle the removal
-async def remove_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    sc = update.message.text.strip()
-    uid = update.effective_user.id
     async with aiosqlite.connect(DB_FILE) as db:
-        await db.execute(
-            "DELETE FROM views WHERE reel_id IN (SELECT id FROM reels WHERE user_id=? AND shortcode=?)",
-            (uid, sc)
+        cur = await db.execute(
+            "SELECT id FROM reels WHERE user_id=? AND shortcode=?", (uid, code)
         )
-        await db.execute(
-            "DELETE FROM reels WHERE user_id=? AND shortcode=?", (uid, sc)
-        )
+        row = await cur.fetchone()
+        if not row:
+            await update.message.reply_text("❌ You never submitted that Reel.")
+            return ConversationHandler.END
+
+        reel_id = row[0]
+        await db.execute("DELETE FROM views WHERE reel_id=?", (reel_id,))
+        await db.execute("DELETE FROM reels WHERE id=?", (reel_id,))
+
+        # if no more reels, remove user record
+        cur2 = await db.execute("SELECT COUNT(*) FROM reels WHERE user_id=?", (uid,))
+        rem  = (await cur2.fetchone())[0]
+        if rem == 0:
+            await db.execute("DELETE FROM users WHERE user_id=?", (uid,))
+
         await db.commit()
-    await update.message.reply_text(f"✅ Removed `{sc}`.")
+
+    await update.message.reply_text(f"✅ Removed Reel `{code}`.")
     return ConversationHandler.END
 
-# (Admin handlers unchanged...)
 
-# ── Bootstrap & Webhook Startup ─────────────────────────────────────────────────
+# ── Admin Command Handlers ─────────────────────────────────────────────────────
+async def adminstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+    async with aiosqlite.connect(DB_FILE) as db:
+        ucur = await db.execute("SELECT COUNT(*) FROM users")
+        rcur = await db.execute("SELECT COUNT(*) FROM reels")
+        total_users = (await ucur.fetchone())[0]
+        total_reels = (await rcur.fetchone())[0]
+
+        top = await db.execute(
+            "SELECT username, COUNT(*) AS c FROM reels GROUP BY username ORDER BY c DESC LIMIT 5"
+        )
+        tops = await top.fetchall()
+
+    msg = (
+        f"🛠️ Admin Stats:\n"
+        f"• Users: {total_users}\n"
+        f"• Reels: {total_reels}\n\n"
+        "Top IG Accounts:\n" +
+        "\n".join(f"– @{u}: {c}" for u, c in tops)
+    )
+    await update.message.reply_text(msg)
+
+
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+    if not context.args:
+        return await update.message.reply_text("Usage: /broadcast <message>")
+    text = "📢 " + " ".join(context.args)
+    async with aiosqlite.connect(DB_FILE) as db:
+        cur = await db.execute("SELECT user_id FROM users")
+        for (uid,) in await cur.fetchall():
+            try:
+                await context.bot.send_message(chat_id=uid, text=text)
+            except:
+                pass
+    await update.message.reply_text("✅ Broadcast sent.")
+
+
+async def deleteuser(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id) or not context.args:
+        return await update.message.reply_text("Usage: /deleteuser <telegram_id>")
+    targ = context.args[0]
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute(
+            "DELETE FROM views WHERE reel_id IN (SELECT id FROM reels WHERE user_id=?)", (targ,)
+        )
+        await db.execute("DELETE FROM reels WHERE user_id=?", (targ,))
+        await db.execute("DELETE FROM users WHERE user_id=?", (targ,))
+        await db.commit()
+    await update.message.reply_text(f"🧹 Deleted user {targ}.")
+
+
+async def deletereel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id) or not context.args:
+        return await update.message.reply_text("Usage: /deletereel <shortcode>")
+    sc = context.args[0]
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute(
+            "DELETE FROM views WHERE reel_id IN (SELECT id FROM reels WHERE shortcode=?)", (sc,)
+        )
+        await db.execute("DELETE FROM reels WHERE shortcode=?", (sc,))
+        await db.commit()
+    await update.message.reply_text(f"✅ Deleted reel `{sc}`.")
+
+
+# ── Bootstrap & Webhook Launch ─────────────────────────────────────────────────
 if __name__ == "__main__":
-    # 1) init database
+    # 1) Initialize the database
     asyncio.get_event_loop().run_until_complete(init_db())
 
-    # 2) build application
+    # 2) Build bot application
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # 3) register handlers
+    # 3) Register user handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(ConversationHandler(
         entry_points=[CommandHandler("submit", submit_start)],
@@ -219,15 +302,20 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(ConversationHandler(
         entry_points=[CommandHandler("remove", remove_start)],
-        states={ REMOVE_SELECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_received)] },
+        states={ REMOVE_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_received)] },
         fallbacks=[]
     ))
-    # ... register your admin handlers here ...
 
-    # 4) start background tracker
+    # 4) Register admin handlers
+    app.add_handler(CommandHandler("adminstats", adminstats))
+    app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(CommandHandler("deleteuser", deleteuser))
+    app.add_handler(CommandHandler("deletereel", deletereel))
+
+    # 5) Start background view‑tracking
     asyncio.get_event_loop().create_task(track_loop())
 
-    # 5) launch webhook
+    # 6) Launch webhook (blocks here)
     print("🤖 Running in webhook mode…")
     app.run_webhook(
         listen="0.0.0.0",
