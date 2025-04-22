@@ -129,6 +129,7 @@ async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def main():
     await init_db()
+
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -137,13 +138,15 @@ async def main():
     app.add_handler(CommandHandler("remove", remove))
 
     asyncio.create_task(track_views_loop())
-    print("🤖 Bot running in webhook mode...")
+
+    print("🤖 Running in webhook mode...")
 
     await app.run_webhook(
         listen="0.0.0.0",
-        port=int(os.getenv("PORT", 10000)),
-        webhook_url=os.getenv("WEBHOOK_URL")
+        port=int(os.getenv("PORT", 10000)),  # Render uses dynamic PORT
+        webhook_url=os.getenv("WEBHOOK_URL")  # your Render domain
     )
+
     
 if __name__ == "__main__":
     nest_asyncio.apply()
