@@ -23,9 +23,9 @@ LOG_GROUP_ID  = os.getenv("LOG_GROUP_ID")   # e.g. "-1001234567890"
 WEBHOOK_URL   = os.getenv("WEBHOOK_URL")    # e.g. "https://your-app.onrender.com/"
 PORT          = int(os.getenv("PORT", "10000"))
 DB_FILE       = "reels.db"
-COOLDOWN_SEC  = 60  # one-minute cooldown between /submit
+COOLDOWN_SEC  = 60  # one‑minute cooldown for /submit
 
-# Helpers
+# Helper functions
 def extract_shortcode(link: str) -> str | None:
     m = re.search(r"instagram\.com/reel/([^/?]+)", link)
     return m.group(1) if m else None
@@ -40,82 +40,99 @@ async def log_to_group(bot, text: str):
         except:
             pass
 
-# Initialize database
+# Initialize SQLite tables
 async def init_db():
     async with aiosqlite.connect(DB_FILE) as db:
-        await db.execute("""CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY
-        )""")
-        await db.execute("""CREATE TABLE IF NOT EXISTS user_accounts (
-            user_id     INTEGER,
-            insta_handle TEXT,
-            PRIMARY KEY (user_id, insta_handle)
-        )""")
-        await db.execute("""CREATE TABLE IF NOT EXISTS reels (
-            id        INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id   INTEGER,
-            shortcode TEXT,
-            username  TEXT,
-            UNIQUE(user_id, shortcode)
-        )""")
-        await db.execute("""CREATE TABLE IF NOT EXISTS views (
-            reel_id   INTEGER,
-            timestamp TEXT,
-            count     INTEGER
-        )""")
-        await db.execute("""CREATE TABLE IF NOT EXISTS cooldowns (
-            user_id     INTEGER PRIMARY KEY,
-            last_submit TEXT
-        )""")
-        await db.execute("""CREATE TABLE IF NOT EXISTS audit (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id      INTEGER,
-            action       TEXT,
-            shortcode    TEXT,
-            timestamp    TEXT
-        )""")
+        # users table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY
+            )
+        """)
+        # allow many accounts per user
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS user_accounts (
+                user_id      INTEGER,
+                insta_handle TEXT,
+                PRIMARY KEY (user_id, insta_handle)
+            )
+        """)
+        # tracked reels
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS reels (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id   INTEGER,
+                shortcode TEXT,
+                username  TEXT,
+                UNIQUE(user_id, shortcode)
+            )
+        """)
+        # view history
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS views (
+                reel_id   INTEGER,
+                timestamp TEXT,
+                count     INTEGER
+            )
+        """)
+        # per‑user cooldowns
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS cooldowns (
+                user_id     INTEGER PRIMARY KEY,
+                last_submit TEXT
+            )
+        """)
+        # audit log
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS audit (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id      INTEGER,
+                action       TEXT,
+                shortcode    TEXT,
+                timestamp    TEXT
+            )
+        """)
         await db.commit()
 
-# Background view-tracking
+# Background task: re‑scrape every 12 h
 async def track_all_views():
     L = instaloader.Instaloader()
     async with aiosqlite.connect(DB_FILE) as db:
         cursor = await db.execute("SELECT id, shortcode FROM reels")
         for reel_id, code in await cursor.fetchall():
-            for attempt in range(3):
+            for _ in range(3):
                 try:
                     post = instaloader.Post.from_shortcode(L.context, code)
                     ts   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    views = post.video_view_count
                     await db.execute(
                         "INSERT INTO views (reel_id, timestamp, count) VALUES (?, ?, ?)",
-                        (reel_id, ts, views)
+                        (reel_id, ts, post.video_view_count)
                     )
                     await db.commit()
                     break
-                except Exception:
+                except:
                     await asyncio.sleep(2)
 
 async def track_loop():
     await asyncio.sleep(5)
     while True:
         await track_all_views()
-        await asyncio.sleep(12*3600)
+        await asyncio.sleep(12*3600)  # 12 hours
 
 # /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Welcome!\n"
-        "/addaccount <tg_id> @insta   → assign an Instagram account to user\n"
+        "/addaccount <tg_id> @insta   → assign Instagram account(s)\n"
         "/userstats <tg_id>           → view that user’s stats\n"
-        "/submit <Reel URL>           → submit a reel (1-min cooldown)\n"
+        "/submit <Reel URL>           → submit a reel (60 s cooldown)\n"
         "/stats                       → your stats\n"
-        "/remove <Reel URL>           → remove a submitted reel\n"
+        "/remove <Reel URL>           → remove a reel\n"
         "Admin only:\n"
         "/adminstats /auditlog /broadcast /deleteuser /deletereel"
     )
 
-# /addaccount
+# /addaccount <tg_id> @handle
 async def addaccount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not is_admin(uid) or len(context.args)!=2:
@@ -132,16 +149,14 @@ async def addaccount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Assigned {handle} to user {target}")
     await log_to_group(context.bot, f"Admin {uid} assigned {handle} to user {target}")
 
-# /userstats
+# /userstats <tg_id>
 async def userstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not is_admin(uid) or len(context.args)!=1:
         return await update.message.reply_text("Usage: /userstats <tg_id>")
     target = int(context.args[0])
     async with aiosqlite.connect(DB_FILE) as db:
-        accs = await db.execute(
-            "SELECT insta_handle FROM user_accounts WHERE user_id=?", (target,)
-        )
+        accs = await db.execute("SELECT insta_handle FROM user_accounts WHERE user_id=?", (target,))
         handles = [r[0] for r in await accs.fetchall()]
         reels = await db.execute("SELECT id FROM reels WHERE user_id=?", (target,))
         rlist = await reels.fetchall()
@@ -151,7 +166,8 @@ async def userstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "SELECT count FROM views WHERE reel_id=? ORDER BY timestamp DESC LIMIT 1", (rid,)
             )
             row = await vcur.fetchone()
-            if row: total_views += row[0]
+            if row:
+                total_views += row[0]
     await update.message.reply_text(
         f"Stats for {target}\n"
         f"• Instagram: {', '.join(handles) or 'None'}\n"
@@ -160,13 +176,14 @@ async def userstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await log_to_group(context.bot, f"Admin {uid} viewed stats for user {target}")
 
-# /submit
+# /submit <URL> (60s cooldown, one URL per command)
 async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not context.args:
         return await update.message.reply_text("Usage: /submit <Instagram Reel URL>")
 
     now = datetime.now()
+    # cooldown check
     async with aiosqlite.connect(DB_FILE) as db:
         cd = await db.execute("SELECT last_submit FROM cooldowns WHERE user_id=?", (uid,))
         row = await cd.fetchone()
@@ -175,21 +192,22 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if (now - last).total_seconds() < COOLDOWN_SEC:
                 wait = int(COOLDOWN_SEC - (now-last).total_seconds())
                 return await update.message.reply_text(f"⏱ Please wait {wait}s.")
+        # update cooldown
         await db.execute(
             "INSERT OR REPLACE INTO cooldowns (user_id, last_submit) VALUES (?, ?)",
             (uid, now.isoformat())
         )
         await db.commit()
 
-    link = context.args[0]
-    code = extract_shortcode(link)
+    code = extract_shortcode(context.args[0])
     if not code:
         return await update.message.reply_text("❌ Invalid Reel URL.")
 
-    # check assigned accounts
+    # verify against any assigned account
     async with aiosqlite.connect(DB_FILE) as db:
-        ac = await db.execute("SELECT insta_handle FROM user_accounts WHERE user_id=?", (uid,))
-        allowed = [h.lstrip('@').lower() for h,_ in await db.execute_fetchall(ac)]
+        cur = await db.execute("SELECT insta_handle FROM user_accounts WHERE user_id=?", (uid,))
+        rows = await cur.fetchall()
+    allowed = [h[0].lstrip('@').lower() for h in rows]
     if not allowed:
         return await update.message.reply_text("⚠️ No account assigned. Ask admin.")
     # fetch post
@@ -197,20 +215,21 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         post = instaloader.Post.from_shortcode(L.context, code)
     except:
-        return await update.message.reply_text("⚠️ Fetch failed. Make sure it's public.")
+        return await update.message.reply_text("⚠️ Failed to fetch—must be public.")
     if post.owner_username.lower() not in allowed:
-        return await update.message.reply_text(f"❌ Not your assigned account: {', '.join('@'+a for a in allowed)}")
+        return await update.message.reply_text(
+            f"❌ Reel not from your accounts: {', '.join('@'+a for a in allowed)}"
+        )
 
-    username = post.owner_username
-    views0   = post.video_view_count
-    ts_str   = now.strftime("%Y-%m-%d %H:%M:%S")
-
+    # store submission
+    views0 = post.video_view_count
+    ts_str = now.strftime("%Y-%m-%d %H:%M:%S")
     async with aiosqlite.connect(DB_FILE) as db:
         await db.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (uid,))
         try:
             await db.execute(
                 "INSERT INTO reels (user_id, shortcode, username) VALUES (?, ?, ?)",
-                (uid, code, username)
+                (uid, code, post.owner_username)
             )
             await db.execute(
                 "INSERT INTO views (reel_id, timestamp, count) VALUES ("
@@ -222,7 +241,7 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 (uid, code, ts_str)
             )
             await db.commit()
-            await update.message.reply_text(f"✅ @{username} submitted ({views0} views).")
+            await update.message.reply_text(f"✅ @{post.owner_username} submitted ({views0} views).")
             await log_to_group(context.bot, f"User {uid} submitted reel {code}")
         except aiosqlite.IntegrityError:
             await update.message.reply_text("⚠️ Already submitted.")
@@ -234,7 +253,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rcur = await db.execute("SELECT id, username FROM reels WHERE user_id=?", (uid,))
         reels = await rcur.fetchall()
     if not reels:
-        return await update.message.reply_text("📭 No reels tracked yet.")
+        return await update.message.reply_text("📭 No reels tracked.")
     total, users = 0, set()
     async with aiosqlite.connect(DB_FILE) as db:
         for rid, uname in reels:
@@ -243,20 +262,20 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "SELECT count FROM views WHERE reel_id=? ORDER BY timestamp DESC LIMIT 1", (rid,)
             )
             row = await vcur.fetchone()
-            if row: total += row[0]
+            if row:
+                total += row[0]
     text = (f"📊 Videos: {len(reels)}\n"
             f"📈 Views:  {total}\n"
             f"👤 Accounts: {', '.join(users)}")
     await update.message.reply_text(text)
     await log_to_group(context.bot, f"User {uid} checked stats")
 
-# /remove
+# /remove <URL>
 async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not context.args:
         return await update.message.reply_text("Usage: /remove <Instagram Reel URL>")
-    link = context.args[0]
-    code = extract_shortcode(link)
+    code = extract_shortcode(context.args[0])
     if not code:
         return await update.message.reply_text("❌ Invalid Reel URL.")
     async with aiosqlite.connect(DB_FILE) as db:
@@ -271,7 +290,7 @@ async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "INSERT INTO audit (user_id, action, shortcode, timestamp) VALUES (?, 'removed', ?, ?)",
             (uid, code, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         )
-        # cleanup user row if none left
+        # cleanup user if no more reels
         rc = await db.execute("SELECT COUNT(*) FROM reels WHERE user_id=?", (uid,))
         if (await rc.fetchone())[0] == 0:
             await db.execute("DELETE FROM users WHERE user_id=?", (uid,))
@@ -279,7 +298,7 @@ async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Removed `{code}`.")
     await log_to_group(context.bot, f"User {uid} removed reel {code}")
 
-# Admin commands...
+# Admin commands
 async def adminstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not is_admin(uid): return
@@ -350,7 +369,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     tb = "".join(traceback.format_exception(None, context.error, context.error.__traceback__))
     await log_to_group(context.bot, f"❗️ Error\n<pre>{tb}</pre>")
 
-# Bootstrap & webhook startup
+# Startup
 if __name__ == "__main__":
     asyncio.get_event_loop().run_until_complete(init_db())
     app = ApplicationBuilder().token(TOKEN).build()
