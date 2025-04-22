@@ -137,10 +137,13 @@ async def main():
     app.add_handler(CommandHandler("remove", remove))
 
     asyncio.create_task(track_views_loop())
-    print("🤖 Bot is running...")
+    print("🤖 Bot running in webhook mode...")
 
-    # ✅ Don't close the running loop (Fix for Render)
-    await app.run_polling(close_loop=False)
+    await app.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.getenv("PORT", 10000)),
+        webhook_url=os.getenv("WEBHOOK_URL")
+    )
     
 if __name__ == "__main__":
     nest_asyncio.apply()
