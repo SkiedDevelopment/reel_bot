@@ -126,6 +126,10 @@ async def track_loop():
 async def health(request: web.Request) -> web.Response:
     return web.Response(text="OK")
 
+async def _add_health_route(application):
+    # Mount /health once the web_app is ready
+    application.web_app.router.add_get("/health", health)
+
 # ── Command Handlers ─────────────────────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -232,9 +236,10 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not code:
         return await update.message.reply_text("❌ Invalid Reel URL.")
 
-    allowed = [h[0].lstrip('@').lower() for h in (await session.execute(
-        text("SELECT insta_handle FROM user_accounts WHERE user_id=:u"), {"u": uid}
-    )).all()]
+    async with AsyncSessionLocal() as session:
+        allowed = [h[0].lstrip('@').lower() for h in (await session.execute(
+            text("SELECT insta_handle FROM user_accounts WHERE user_id=:u"), {"u": uid}
+        )).all()]
     if not allowed:
         return await update.message.reply_text("⚠️ No account assigned. Ask admin.")
 
@@ -262,13 +267,17 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 {"u": uid, "c": code, "n": post.owner_username}
             )
             await session.execute(
-                text("INSERT INTO views (reel_id, timestamp, count) VALUES ("
-                     "(SELECT id FROM reels WHERE user_id=:u AND shortcode=:c), :t, :v)"),
+                text(
+                  "INSERT INTO views (reel_id, timestamp, count) VALUES ("
+                  "(SELECT id FROM reels WHERE user_id=:u AND shortcode=:c), :t, :v)"
+                ),
                 {"u": uid, "c": code, "t": ts_str, "v": views0}
             )
             await session.execute(
-                text("INSERT INTO audit (user_id, action, shortcode, timestamp) "
-                     "VALUES (:u, 'submitted', :c, :t)"),
+                text(
+                  "INSERT INTO audit (user_id, action, shortcode, timestamp) "
+                  "VALUES (:u, 'submitted', :c, :t)"
+                ),
                 {"u": uid, "c": code, "t": ts_str}
             )
             await session.commit()
@@ -280,22 +289,37 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             await update.message.reply_text("⚠️ Already submitted.")
 
-# ... (other handlers unchanged) ...
+# (Include stats, remove, adminstats, auditlog, broadcast, deleteuser, deletereel handlers here as before)
 
 # ── Bootstrap & Webhook Startup ─────────────────────────────────────────────────
 if __name__ == "__main__":
+    # Initialize DB
     asyncio.get_event_loop().run_until_complete(init_db())
 
-    app = ApplicationBuilder().token(TOKEN).build()
+    # Build app with post_init hook to mount /health
+    app = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .post_init(_add_health_route)
+        .build()
+    )
 
-    # mount health endpoint correctly
-    app.web_app.router.add_get("/health", health)
+    # Register command handlers...
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("addaccount", addaccount))
+    app.add_handler(CommandHandler("userstats", userstats))
+    app.add_handler(CommandHandler("submit", submit))
+    # ... and the rest: stats, remove, adminstats, auditlog, broadcast, deleteuser, deletereel ...
 
-    # register all command handlers here...
-    # e.g. app.add_handler(CommandHandler("start", start)), etc.
+    # Global error handler
+    app.add_error_handler(lambda u, c: asyncio.create_task(
+        log_to_group(app.bot, f"❗️ Error\n<pre>{c.error}</pre>")
+    ))
 
+    # Background tracking
     asyncio.get_event_loop().create_task(track_loop())
 
+    # Run webhook
     print("🤖 Running in webhook mode…")
     app.run_webhook(
         listen="0.0.0.0",
