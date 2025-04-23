@@ -4,3 +4,4 @@ nest_asyncio
 asyncpg
 SQLAlchemy[asyncio]
 aiohttp
+psycopg2-binary
