@@ -8,11 +8,7 @@ import traceback
 from datetime import datetime
 from aiohttp import web
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    ContextTypes,
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
@@ -22,33 +18,26 @@ from sqlalchemy import text
 nest_asyncio.apply()
 
 # ── Configuration ────────────────────────────────────────────────────────────────
-TOKEN         = os.getenv("TOKEN")
-ADMIN_ID      = os.getenv("ADMIN_ID")
-LOG_GROUP_ID  = os.getenv("LOG_GROUP_ID")
-PORT          = int(os.getenv("PORT", "10000"))
-DATABASE_URL  = os.getenv("DATABASE_URL")
-COOLDOWN_SEC  = 60  # seconds
+TOKEN        = os.getenv("TOKEN")
+ADMIN_ID     = os.getenv("ADMIN_ID")
+LOG_GROUP_ID = os.getenv("LOG_GROUP_ID")
+PORT         = int(os.getenv("PORT", "10000"))
+DATABASE_URL = os.getenv("DATABASE_URL")
+COOLDOWN_SEC = 60
 
 if not TOKEN or not DATABASE_URL:
     sys.exit("❌ Missing TOKEN or DATABASE_URL environment variable!")
 
-# Ensure we use asyncpg
 if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace(
-        "postgres://", "postgresql+asyncpg://", 1
-    )
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
 elif DATABASE_URL.startswith("postgresql://"):
-    DATABASE_URL = DATABASE_URL.replace(
-        "postgresql://", "postgresql+asyncpg://", 1
-    )
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
 # ── SQLAlchemy Async Setup ──────────────────────────────────────────────────────
 engine = create_async_engine(DATABASE_URL, future=True)
-AsyncSessionLocal = sessionmaker(
-    engine, class_=AsyncSession, expire_on_commit=False
-)
+AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
-# ── Helper Functions ─────────────────────────────────────────────────────────────
+# ── Helpers ──────────────────────────────────────────────────────────────────────
 def extract_shortcode(link: str) -> str | None:
     m = re.search(r"instagram\.com/reel/([^/?]+)", link)
     return m.group(1) if m else None
@@ -63,7 +52,7 @@ async def log_to_group(bot, text: str):
         except:
             pass
 
-# ── Database Initialization ──────────────────────────────────────────────────────
+# ── DB Init ──────────────────────────────────────────────────────────────────────
 async def init_db():
     ddl = """
     CREATE TABLE IF NOT EXISTS users (
@@ -105,116 +94,74 @@ async def init_db():
             if s:
                 await conn.execute(text(s))
 
-# ── Background View Tracker ─────────────────────────────────────────────────────
+# ── View Tracker ─────────────────────────────────────────────────────────────────
 async def track_all_views():
     L = instaloader.Instaloader()
     async with AsyncSessionLocal() as session:
-        rows = (await session.execute(
-            text("SELECT id, shortcode FROM reels")
-        )).all()
+        rows = (await session.execute(text("SELECT id, shortcode FROM reels"))).all()
     for reel_id, code in rows:
         for _ in range(3):
             try:
                 post = instaloader.Post.from_shortcode(L.context, code)
                 ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                async with AsyncSessionLocal() as session:
-                    await session.execute(
+                async with AsyncSessionLocal() as session2:
+                    await session2.execute(
                         text(
                           "INSERT INTO views (reel_id, timestamp, count) "
                           "VALUES (:r, :t, :c)"
                         ),
                         {"r": reel_id, "t": ts, "c": post.video_view_count}
                     )
-                    await session.commit()
+                    await session2.commit()
                 break
             except:
                 await asyncio.sleep(2)
 
 async def track_loop():
-    # wait for bot to start
     await asyncio.sleep(5)
     while True:
         await track_all_views()
         await asyncio.sleep(12 * 3600)
 
-# ── Health Endpoint ───────────────────────────────────────────────────────────────
+# ── Health Server ────────────────────────────────────────────────────────────────
 async def health(request: web.Request) -> web.Response:
     return web.Response(text="OK")
 
-# ── Telegram Command Handlers ────────────────────────────────────────────────────
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 Welcome!\n"
-        "/addaccount <tg_id> @insta   → assign Instagram account(s)\n"
-        "/userstats <tg_id>           → view that user’s stats\n"
-        "/submit <Reel URL>           → submit a reel (60s cooldown)\n"
-        "/stats                       → your stats\n"
-        "/remove <Reel URL>           → remove a reel\n"
-        "Admin only:\n"
-        "/adminstats /auditlog /broadcast /deleteuser /deletereel"
-    )
-
-async def addaccount(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if not is_admin(uid) or len(context.args) != 2:
-        return await update.message.reply_text(
-            "Usage: /addaccount <tg_id> @insta_handle"
-        )
-    target, handle = context.args
-    if not handle.startswith('@'):
-        return await update.message.reply_text("Handle must start with '@'")
-    async with AsyncSessionLocal() as session:
-        await session.execute(
-            text(
-              "INSERT OR IGNORE INTO user_accounts "
-              "(user_id, insta_handle) VALUES (:u, :h)"
-            ),
-            {"u": int(target), "h": handle}
-        )
-        await session.commit()
-    await update.message.reply_text(f"✅ Assigned {handle} to user {target}")
-    await log_to_group(
-        context.bot,
-        f"Admin @{update.effective_user.username} assigned {handle} to user {target}"
-    )
-
-# [...]   implement userstats, submit, stats, remove, adminstats, auditlog, broadcast,
-#          deleteuser, deletereel exactly as before
-
-# ── Entrypoint ──────────────────────────────────────────────────────────────────
-async def main():
-    # 1) Init database
-    await init_db()
-
-    # 2) Start health‐check HTTP server
-    app_health = web.Application()
-    app_health.router.add_get("/health", health)
-    runner = web.AppRunner(app_health)
+async def start_health():
+    app = web.Application()
+    app.router.add_get("/health", health)
+    runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
 
-    # 3) Build Telegram Application
-    app = ApplicationBuilder().token(TOKEN).build()
+# ── Command Handlers (implement stats, remove, adminstats, etc. similarly) ───────
+async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("👋 Welcome!\n/send your commands…")
 
-    # 4) Register all your handlers
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("addaccount", addaccount))
-    # [...] register the rest of your command handlers here...
+# … your other handlers here …
 
-    # 5) Global error logger
-    app.add_error_handler(
-        lambda u, c: asyncio.create_task(
-            log_to_group(app.bot, f"❗️ Error\n<pre>{c.error}</pre>")
-        )
-    )
-
-    # 6) Kick off the view‐tracking loop
-    asyncio.create_task(track_loop())
-
-    # 7) Start long‐polling (this blocks, but the health server lives in its own task)
-    print("🤖 Bot running in polling mode…")
-    await app.run_polling(bootstrap_retries=0, close_loop=False)
-
+# ── Main Startup ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    asyncio.run(main())
+    loop = asyncio.get_event_loop()
+    # 1) Init DB
+    loop.run_until_complete(init_db())
+    # 2) Launch health endpoint
+    loop.create_task(start_health())
+    # 3) Launch view tracker
+    loop.create_task(track_loop())
+
+    # 4) Build Telegram app
+    app = ApplicationBuilder().token(TOKEN).build()
+    # register all CommandHandlers:
+    app.add_handler(CommandHandler("start", start_cmd))
+    # … add your other handlers …
+
+    # 5) Error logger
+    app.add_error_handler(lambda u, c: asyncio.create_task(
+        log_to_group(app.bot, f"❗️ Error\n<pre>{c.error}</pre>")
+    ))
+
+    # 6) Run polling (blocks, but health & tracker run in background)
+    print("🤖 Bot running in polling mode…")
+    app.run_polling(close_loop=False)
