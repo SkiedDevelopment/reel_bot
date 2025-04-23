@@ -29,7 +29,7 @@ COOLDOWN_SEC  = 60  # seconds
 if not DATABASE_URL:
     sys.exit("❌ Missing DATABASE_URL environment variable!")
 
-# ensure we use asyncpg driver
+# Ensure we use the asyncpg driver
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
 elif DATABASE_URL.startswith("postgresql://"):
@@ -100,8 +100,7 @@ async def init_db():
 async def track_all_views():
     L = instaloader.Instaloader()
     async with AsyncSessionLocal() as session:
-        result = await session.execute(text("SELECT id, shortcode FROM reels"))
-        rows = result.all()
+        rows = (await session.execute(text("SELECT id, shortcode FROM reels"))).all()
     for reel_id, code in rows:
         for _ in range(3):
             try:
@@ -109,10 +108,7 @@ async def track_all_views():
                 ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 async with AsyncSessionLocal() as session:
                     await session.execute(
-                        text(
-                          "INSERT INTO views (reel_id, timestamp, count) "
-                          "VALUES (:r, :t, :c)"
-                        ),
+                        text("INSERT INTO views (reel_id, timestamp, count) VALUES (:r, :t, :c)"),
                         {"r": reel_id, "t": ts, "c": post.video_view_count}
                     )
                     await session.commit()
@@ -153,10 +149,7 @@ async def addaccount(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("Handle must start with '@'")
     async with AsyncSessionLocal() as session:
         await session.execute(
-            text(
-              "INSERT OR IGNORE INTO user_accounts "
-              "(user_id, insta_handle) VALUES (:u, :h)"
-            ),
+            text("INSERT OR IGNORE INTO user_accounts (user_id, insta_handle) VALUES (:u, :h)"),
             {"u": int(target), "h": handle}
         )
         await session.commit()
@@ -171,30 +164,19 @@ async def userstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(uid) or len(context.args) != 1:
         return await update.message.reply_text("Usage: /userstats <tg_id>")
     target = int(context.args[0])
-    # fetch handles + reels
     async with AsyncSessionLocal() as session:
-        res1 = await session.execute(
-            text("SELECT insta_handle FROM user_accounts WHERE user_id=:u"),
-            {"u": target}
-        )
-        handles = [r[0] for r in res1.all()]
-        res2 = await session.execute(
-            text("SELECT id, shortcode FROM reels WHERE user_id=:u"),
-            {"u": target}
-        )
-        reels = res2.all()
+        handles = [r[0] for r in (await session.execute(
+            text("SELECT insta_handle FROM user_accounts WHERE user_id=:u"), {"u": target}
+        )).all()]
+        reels = (await session.execute(
+            text("SELECT id, shortcode FROM reels WHERE user_id=:u"), {"u": target}
+        )).all()
     total_views = 0
     details = []
     for rid, code in reels:
-        async with AsyncSessionLocal() as session:
-            rv = await session.execute(
-                text(
-                  "SELECT count FROM views "
-                  "WHERE reel_id=:r ORDER BY timestamp DESC LIMIT 1"
-                ),
-                {"r": rid}
-            )
-            row = rv.fetchone()
+        row = (await session.execute(
+            text("SELECT count FROM views WHERE reel_id=:r ORDER BY timestamp DESC LIMIT 1"), {"r": rid}
+        )).fetchone()
         cnt = row[0] if row else 0
         total_views += cnt
         details.append((code, cnt))
@@ -204,7 +186,7 @@ async def userstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Instagram: {', '.join(handles) or 'None'}",
         f"• Total videos: {len(reels)}",
         f"• Total views: {total_views}",
-        "Reels (highest→lowest):"
+        "Reels (highest→lowest):",
     ]
     for i, (code, cnt) in enumerate(details, 1):
         lines.append(f"{i}. https://instagram.com/reel/{code} – {cnt} views")
@@ -220,13 +202,10 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("Usage: /submit <Instagram Reel URL>")
 
     now = datetime.now()
-    # cooldown
     async with AsyncSessionLocal() as session:
-        cd = await session.execute(
-            text("SELECT last_submit FROM cooldowns WHERE user_id=:u"),
-            {"u": uid}
-        )
-        row = cd.fetchone()
+        row = (await session.execute(
+            text("SELECT last_submit FROM cooldowns WHERE user_id=:u"), {"u": uid}
+        )).fetchone()
         if row:
             last = datetime.fromisoformat(row[0])
             rem  = COOLDOWN_SEC - (now - last).total_seconds()
@@ -244,10 +223,7 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 asyncio.create_task(_del())
                 return
         await session.execute(
-            text(
-              "INSERT OR REPLACE INTO cooldowns "
-              "(user_id, last_submit) VALUES (:u, :t)"
-            ),
+            text("INSERT OR REPLACE INTO cooldowns (user_id, last_submit) VALUES (:u, :t)"),
             {"u": uid, "t": now.isoformat()}
         )
         await session.commit()
@@ -256,13 +232,9 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not code:
         return await update.message.reply_text("❌ Invalid Reel URL.")
 
-    # check assigned handles
-    async with AsyncSessionLocal() as session:
-        res = await session.execute(
-            text("SELECT insta_handle FROM user_accounts WHERE user_id=:u"),
-            {"u": uid}
-        )
-        allowed = [h[0].lstrip('@').lower() for h in res.all()]
+    allowed = [h[0].lstrip('@').lower() for h in (await session.execute(
+        text("SELECT insta_handle FROM user_accounts WHERE user_id=:u"), {"u": uid}
+    )).all()]
     if not allowed:
         return await update.message.reply_text("⚠️ No account assigned. Ask admin.")
 
@@ -273,8 +245,7 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("⚠️ Fetch failed; must be public.")
     if post.owner_username.lower() not in allowed:
         return await update.message.reply_text(
-            f"❌ Reel not from your accounts: "
-            f"{', '.join('@'+a for a in allowed)}"
+            f"❌ Reel not from your accounts: {', '.join('@'+a for a in allowed)}"
         )
 
     views0 = post.video_view_count
@@ -282,49 +253,34 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     async with AsyncSessionLocal() as session:
         await session.execute(
-            text(
-              "INSERT OR REPLACE INTO users "
-              "(user_id, username) VALUES (:u, :n)"
-            ),
+            text("INSERT OR REPLACE INTO users (user_id, username) VALUES (:u, :n)"),
             {"u": uid, "n": update.effective_user.username or ""}
         )
         try:
             await session.execute(
-                text(
-                  "INSERT INTO reels "
-                  "(user_id, shortcode, username) VALUES (:u, :c, :n)"
-                ),
+                text("INSERT INTO reels (user_id, shortcode, username) VALUES (:u, :c, :n)"),
                 {"u": uid, "c": code, "n": post.owner_username}
             )
             await session.execute(
-                text(
-                  "INSERT INTO views "
-                  "(reel_id, timestamp, count) VALUES ("
-                  "(SELECT id FROM reels WHERE user_id=:u AND shortcode=:c), :t, :v)"
-                ),
+                text("INSERT INTO views (reel_id, timestamp, count) VALUES ("
+                     "(SELECT id FROM reels WHERE user_id=:u AND shortcode=:c), :t, :v)"),
                 {"u": uid, "c": code, "t": ts_str, "v": views0}
             )
             await session.execute(
-                text(
-                  "INSERT INTO audit "
-                  "(user_id, action, shortcode, timestamp) "
-                  "VALUES (:u, 'submitted', :c, :t)"
-                ),
+                text("INSERT INTO audit (user_id, action, shortcode, timestamp) "
+                     "VALUES (:u, 'submitted', :c, :t)"),
                 {"u": uid, "c": code, "t": ts_str}
             )
             await session.commit()
-            await update.message.reply_text(
-                f"✅ @{post.owner_username} submitted ({views0} views)."
-            )
+            await update.message.reply_text(f"✅ @{post.owner_username} submitted ({views0} views).")
             await log_to_group(
                 context.bot,
                 f"User @{update.effective_user.username} submitted {code}"
             )
-        except Exception:
+        except:
             await update.message.reply_text("⚠️ Already submitted.")
 
-# ── /stats, /remove, /adminstats, etc. use the same functions as before ────────
-# ... (rest of handlers unchanged) ...
+# ... (other handlers unchanged) ...
 
 # ── Bootstrap & Webhook Startup ─────────────────────────────────────────────────
 if __name__ == "__main__":
@@ -332,11 +288,11 @@ if __name__ == "__main__":
 
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # mount health endpoint
-    app._web_app.router.add_get("/health", health)
+    # mount health endpoint correctly
+    app.web_app.router.add_get("/health", health)
 
-    # register handlers (start, addaccount, userstats, submit, stats, remove,
-    # adminstats, auditlog, broadcast, deleteuser, deletereel, error_handler)...
+    # register all command handlers here...
+    # e.g. app.add_handler(CommandHandler("start", start)), etc.
 
     asyncio.get_event_loop().create_task(track_loop())
 
