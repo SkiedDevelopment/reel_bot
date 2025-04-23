@@ -3,3 +3,4 @@ instaloader
 nest_asyncio
 asyncpg
 SQLAlchemy[asyncio]
+aiohttp
