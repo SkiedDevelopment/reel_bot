@@ -5,6 +5,7 @@ import nest_asyncio
 import instaloader
 import traceback
 from datetime import datetime
+from aiohttp import web
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
@@ -12,23 +13,23 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import text
 
-# patch asyncio for hosted envs
+# ── Patch asyncio for hosted envs ───────────────────────────────────────────────
 nest_asyncio.apply()
 
-# configuration
-TOKEN        = os.getenv("TOKEN")
-ADMIN_ID     = os.getenv("ADMIN_ID")       # your Telegram admin user ID
-LOG_GROUP_ID = os.getenv("LOG_GROUP_ID")   # e.g. "-1001234567890"
-WEBHOOK_URL  = os.getenv("WEBHOOK_URL")    # e.g. "https://your-app.onrender.com/"
-PORT         = int(os.getenv("PORT", "10000"))
-DATABASE_URL = os.getenv("DATABASE_URL")   # Postgres URL
-COOLDOWN_SEC = 60
+# ── Configuration ────────────────────────────────────────────────────────────────
+TOKEN         = os.getenv("TOKEN")
+ADMIN_ID      = os.getenv("ADMIN_ID")       # your Telegram admin user ID
+LOG_GROUP_ID  = os.getenv("LOG_GROUP_ID")   # e.g. "-1001234567890"
+WEBHOOK_URL   = os.getenv("WEBHOOK_URL")    # e.g. "https://your-app.onrender.com/"
+PORT          = int(os.getenv("PORT", "10000"))
+DATABASE_URL  = os.getenv("DATABASE_URL")   # Postgres connection string
+COOLDOWN_SEC  = 60
 
-# sqlalchemy async setup
+# ── SQLAlchemy Async Setup ──────────────────────────────────────────────────────
 engine = create_async_engine(DATABASE_URL, future=True)
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
-# helpers
+# ── Helpers ──────────────────────────────────────────────────────────────────────
 def extract_shortcode(link: str) -> str | None:
     m = re.search(r"instagram\.com/reel/([^/?]+)", link)
     return m.group(1) if m else None
@@ -43,7 +44,7 @@ async def log_to_group(bot, text: str):
         except:
             pass
 
-# initialize tables
+# ── Database Initialization ──────────────────────────────────────────────────────
 async def init_db():
     ddl = """
     CREATE TABLE IF NOT EXISTS users (
@@ -85,7 +86,7 @@ async def init_db():
             if s:
                 await conn.execute(text(s))
 
-# background view tracking
+# ── Background View Tracking ────────────────────────────────────────────────────
 async def track_all_views():
     L = instaloader.Instaloader()
     async with AsyncSessionLocal() as session:
@@ -112,20 +113,24 @@ async def track_loop():
         await track_all_views()
         await asyncio.sleep(12*3600)
 
-# /start
+# ── Health Check Endpoint ───────────────────────────────────────────────────────
+async def health(request: web.Request) -> web.Response:
+    return web.Response(text="OK")
+
+# ── Command Handlers ─────────────────────────────────────────────────────────────
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Welcome!\n"
         "/addaccount <tg_id> @insta   → assign Instagram account(s)\n"
         "/userstats <tg_id>           → view that user’s stats\n"
-        "/submit <Reel URL>           → submit a reel (60 s cooldown)\n"
+        "/submit <Reel URL>           → submit a reel (60 s cooldown)\n"
         "/stats                       → your stats\n"
         "/remove <Reel URL>           → remove a reel\n"
         "Admin only:\n"
         "/adminstats /auditlog /broadcast /deleteuser /deletereel"
     )
 
-# /addaccount
 async def addaccount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not is_admin(uid) or len(context.args) != 2:
@@ -142,12 +147,12 @@ async def addaccount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Assigned {handle} to user {target}")
     await log_to_group(context.bot, f"Admin @{update.effective_user.username} assigned {handle} to user {target}")
 
-# /userstats
 async def userstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not is_admin(uid) or len(context.args) != 1:
         return await update.message.reply_text("Usage: /userstats <tg_id>")
     target = int(context.args[0])
+    # fetch assigned handles and reels
     async with AsyncSessionLocal() as session:
         res1 = await session.execute(text("SELECT insta_handle FROM user_accounts WHERE user_id=:u"), {"u": target})
         handles = [r[0] for r in res1.all()]
@@ -158,8 +163,7 @@ async def userstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for rid, code in reels:
         async with AsyncSessionLocal() as session:
             rv = await session.execute(
-                text("SELECT count FROM views WHERE reel_id=:r ORDER BY timestamp DESC LIMIT 1"),
-                {"r": rid}
+                text("SELECT count FROM views WHERE reel_id=:r ORDER BY timestamp DESC LIMIT 1"), {"r": rid}
             )
             row = rv.fetchone()
         cnt = row[0] if row else 0
@@ -178,22 +182,21 @@ async def userstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines))
     await log_to_group(context.bot, f"Admin @{update.effective_user.username} viewed stats for {target}")
 
-# /submit
 async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not context.args:
         return await update.message.reply_text("Usage: /submit <Instagram Reel URL>")
 
     now = datetime.now()
-    # cooldown
+    # enforce cooldown
     async with AsyncSessionLocal() as session:
         cd = await session.execute(text("SELECT last_submit FROM cooldowns WHERE user_id=:u"), {"u": uid})
         row = cd.fetchone()
         if row:
             last = datetime.fromisoformat(row[0])
-            remain = COOLDOWN_SEC - (now - last).total_seconds()
-            if remain > 0:
-                msg = await update.message.reply_text(f"⏱ Please wait {int(remain)}s.")
+            rem  = COOLDOWN_SEC - (now - last).total_seconds()
+            if rem > 0:
+                msg = await update.message.reply_text(f"⏱ Please wait {int(rem)}s.")
                 async def _del():
                     await asyncio.sleep(5)
                     try:
@@ -213,14 +216,13 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not code:
         return await update.message.reply_text("❌ Invalid Reel URL.")
 
-    # check allowed accounts
+    # check user's assigned accounts
     async with AsyncSessionLocal() as session:
         res = await session.execute(text("SELECT insta_handle FROM user_accounts WHERE user_id=:u"), {"u": uid})
-        rows = res.all()
-    allowed = [h[0].lstrip('@').lower() for h in rows]
+        allowed = [h[0].lstrip('@').lower() for h in res.all()]
     if not allowed:
         return await update.message.reply_text("⚠️ No account assigned. Ask admin.")
-    # fetch post
+
     L = instaloader.Instaloader()
     try:
         post = instaloader.Post.from_shortcode(L.context, code)
@@ -235,7 +237,6 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ts_str = now.strftime("%Y-%m-%d %H:%M:%S")
 
     async with AsyncSessionLocal() as session:
-        # upsert user info
         await session.execute(
             text("INSERT OR REPLACE INTO users (user_id, username) VALUES (:u, :n)"),
             {"u": uid, "n": update.effective_user.username or ""}
@@ -261,7 +262,6 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             await update.message.reply_text("⚠️ Already submitted.")
 
-# /stats
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     async with AsyncSessionLocal() as session:
@@ -281,9 +281,8 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total += cnt
         users.add(uname)
         details.append((uname, cnt))
-    # sort by count desc
     details.sort(key=lambda x: x[1], reverse=True)
-    text = [
+    lines = [
         "Your stats:",
         f"• Total videos: {len(reels)}",
         f"• Total views: {total}",
@@ -291,11 +290,10 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Reels (highest→lowest):"
     ]
     for i, (uname, cnt) in enumerate(details, 1):
-        text.append(f"{i}. @{uname} – {cnt} views")
-    await update.message.reply_text("\n".join(text))
+        lines.append(f"{i}. @{uname} – {cnt} views")
+    await update.message.reply_text("\n".join(lines))
     await log_to_group(context.bot, f"User @{update.effective_user.username} checked stats")
 
-# /remove
 async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not context.args:
@@ -318,7 +316,6 @@ async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
                  "(:u, 'removed', :c, :t)"),
             {"u": uid, "c": code, "t": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
         )
-        # cleanup user if none left
         rc = await session.execute(text("SELECT COUNT(*) FROM reels WHERE user_id=:u"), {"u": uid})
         if rc.fetchone()[0] == 0:
             await session.execute(text("DELETE FROM users WHERE user_id=:u"), {"u": uid})
@@ -326,11 +323,13 @@ async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Removed `{code}`.")
     await log_to_group(context.bot, f"User @{update.effective_user.username} removed {code}")
 
-# /adminstats (text file)
+# ── Fixed /adminstats ────────────────────────────────────────────────────────────
 async def adminstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not is_admin(uid):
         return
+
+    # gather all users
     users_data = []
     async with AsyncSessionLocal() as session:
         res = await session.execute(text("SELECT user_id, username FROM users"))
@@ -343,13 +342,17 @@ async def adminstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 vres = await session.execute(
                     text("SELECT count FROM views WHERE reel_id=:r ORDER BY timestamp DESC LIMIT 1"), {"r": rid}
                 )
-                cnt = vres.fetchone()[0] if vres.fetchone() else 0
+                row = vres.fetchone()
+                cnt = row[0] if row else 0
                 total_views += cnt
                 details.append((code, cnt))
             details.sort(key=lambda x: x[1], reverse=True)
             users_data.append((uname or str(user_id), len(reels), total_views, details))
-    # sort desc by views
+
+    # sort descending by views
     users_data.sort(key=lambda x: x[2], reverse=True)
+
+    # build lines
     lines = []
     for uname, vids, views, det in users_data:
         lines.append(f"@{uname}")
@@ -358,25 +361,32 @@ async def adminstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for code, cnt in det:
             lines.append(f"https://instagram.com/reel/{code} – {cnt}")
         lines.append("")
-    path = "/mnt/data/admin_stats.txt"
-    with open(path, "w") as f:
+
+    # write to file
+    report_path = "/mnt/data/admin_stats.txt"
+    with open(report_path, "w") as f:
         f.write("\n".join(lines))
-    await update.message.reply_document(open(path, "rb"), filename="admin_stats.txt")
+
+    # send file
+    await update.message.reply_document(document=open(report_path, "rb"), filename="admin_stats.txt")
     await log_to_group(context.bot, f"Admin @{update.effective_user.username} generated full report")
 
-# /auditlog
+# ── Other Admin Commands (unchanged) ─────────────────────────────────────────────
 async def auditlog(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not is_admin(uid):
         return
     lines = []
     async with AsyncSessionLocal() as session:
-        res = await session.execute(text("SELECT user_id, action, shortcode, timestamp FROM audit ORDER BY id DESC LIMIT 20"))
+        res = await session.execute(text(
+            "SELECT user_id, action, shortcode, timestamp FROM audit ORDER BY id DESC LIMIT 20"
+        ))
         for u, action, code, ts in res.all():
-            lines.append(f"{ts} — @{(await session.execute(text('SELECT username FROM users WHERE user_id=:u'), {'u': u})).fetchone()[0]} {action} `{code}`")
+            uname_res = await session.execute(text("SELECT username FROM users WHERE user_id=:u"), {"u": u})
+            uname = uname_res.fetchone()[0] or str(u)
+            lines.append(f"{ts} — @{uname} {action} `{code}`")
     await update.message.reply_text("📋 Recent Activity:\n" + "\n".join(lines))
 
-# /broadcast
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not is_admin(uid) or not context.args:
@@ -391,7 +401,6 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
     await update.message.reply_text("✅ Broadcast sent.")
 
-# /deleteuser
 async def deleteuser(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not is_admin(uid) or not context.args:
@@ -404,7 +413,6 @@ async def deleteuser(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await session.commit()
     await update.message.reply_text(f"🧹 Deleted user {target}.")
 
-# /deletereel
 async def deletereel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not is_admin(uid) or not context.args:
@@ -416,17 +424,23 @@ async def deletereel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await session.commit()
     await update.message.reply_text(f"✅ Deleted reel `{code}`.")
 
-# global error handler
+# ── Global Error Handler ────────────────────────────────────────────────────────
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     tb = "".join(traceback.format_exception(None, context.error, context.error.__traceback__))
     await log_to_group(context.bot, f"❗️ Error\n<pre>{tb}</pre>")
 
-# startup
+# ── Bootstrap & Webhook Startup ─────────────────────────────────────────────────
 if __name__ == "__main__":
+    # init DB
     asyncio.get_event_loop().run_until_complete(init_db())
+
+    # build app
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # user commands
+    # mount health endpoint
+    app._web_app.router.add_get("/health", health)
+
+    # user handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("addaccount", addaccount))
     app.add_handler(CommandHandler("userstats", userstats))
@@ -434,7 +448,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("remove", remove))
 
-    # admin commands
+    # admin handlers
     app.add_handler(CommandHandler("adminstats", adminstats))
     app.add_handler(CommandHandler("auditlog", auditlog))
     app.add_handler(CommandHandler("broadcast", broadcast))
@@ -444,7 +458,7 @@ if __name__ == "__main__":
     # error handler
     app.add_error_handler(error_handler)
 
-    # background tracking
+    # start background tracking
     asyncio.get_event_loop().create_task(track_loop())
 
     # run webhook
