@@ -15,10 +15,10 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import text
 
-# ── Patch asyncio for hosted environments ───────────────────────────────────────
-import nest_asyncio; nest_asyncio.apply()
+import nest_asyncio
+nest_asyncio.apply()
 
-# ── Configuration ────────────────────────────────────────────────────────────────
+# ── Configuration ───────────────────────────────────────────────────────────────
 TOKEN        = os.getenv("TOKEN")
 ADMIN_IDS    = [aid.strip() for aid in os.getenv("ADMIN_ID","").split(",") if aid.strip()]
 LOG_GROUP_ID = os.getenv("LOG_GROUP_ID")
@@ -29,13 +29,13 @@ COOLDOWN_SEC = 60
 if not TOKEN or not DATABASE_URL:
     sys.exit("❌ TOKEN and DATABASE_URL must be set in your .env")
 
-# normalize asyncpg URL
+# Normalize asyncpg URL
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
 elif DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-# clear old webhook
+# Clear old webhook
 try:
     requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook?drop_pending_updates=true")
 except:
@@ -101,15 +101,15 @@ async def log_to_group(bot, text: str):
         except:
             pass
 
-# ── Background View Tracking ────────────────────────────────────────────────────
+# ── Background tracking ──────────────────────────────────────────────────────────
 async def track_all_views():
     L = instaloader.Instaloader()
     async with AsyncSessionLocal() as session:
-        reels = (await session.execute(text("SELECT id, shortcode FROM reels"))).all()
-    for reel_id, shortcode in reels:
+        rows = (await session.execute(text("SELECT id, shortcode FROM reels"))).all()
+    for reel_id, code in rows:
         for _ in range(3):
             try:
-                post = instaloader.Post.from_shortcode(L.context, shortcode)
+                post = instaloader.Post.from_shortcode(L.context, code)
                 ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 async with AsyncSessionLocal() as s2:
                     await s2.execute(
@@ -127,7 +127,7 @@ async def track_loop():
         await track_all_views()
         await asyncio.sleep(12 * 3600)
 
-# ── Health Endpoint ─────────────────────────────────────────────────────────────
+# ── Health endpoint ─────────────────────────────────────────────────────────────
 async def health(request: web.Request) -> web.Response:
     return web.Response(text="OK")
 
@@ -139,7 +139,7 @@ async def start_health():
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
 
-# ── Command Handlers ─────────────────────────────────────────────────────────────
+# ── Command handlers ────────────────────────────────────────────────────────────
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Welcome to ReelTracker!\n"
@@ -214,27 +214,30 @@ async def userstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(user.id) or len(context.args) != 1:
         return await update.message.reply_text("❌ Usage: /userstats <tg_id>")
     target = int(context.args[0])
+
     async with AsyncSessionLocal() as s:
-        rows = await s.execute(
+        res1 = await s.execute(
             text("SELECT insta_handle FROM user_accounts WHERE user_id=:u"),
             {"u": target}
         )
-        handles = [r[0] for r in rows.all()]
-        rows2 = await s.execute(
+        handles = [row[0] for row in res1.all()]
+        res2 = await s.execute(
             text("SELECT id, shortcode FROM reels WHERE user_id=:u"),
             {"u": target}
         )
-        reels = rows2.all()
+        reels = res2.all()
+
     total_views = 0
     details = []
-    for rid, shortcode in reels:
+    for rid, code in reels:
         row = (await s.execute(
             text("SELECT count FROM views WHERE reel_id=:r ORDER BY timestamp DESC LIMIT 1"),
             {"r": rid}
         )).fetchone()
         cnt = row[0] if row else 0
         total_views += cnt
-        details.append((shortcode, cnt))
+        details.append((code, cnt))
+
     details.sort(key=lambda x: x[1], reverse=True)
     lines = [
         f"Stats for {target}:",
@@ -245,16 +248,15 @@ async def userstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     for i, (code, cnt) in enumerate(details, 1):
         lines.append(f"{i}. https://instagram.com/reel/{code} – {cnt} views")
+
     await update.message.reply_text("\n".join(lines))
 
-# … (submit, stats, remove, adminstats, auditlog, broadcast, deleteuser,
-#    deletereel remain unchanged from previous version; omitted here for brevity)
+# … rest of handlers (submit, stats, remove, adminstats, auditlog, broadcast, deleteuser, deletereel) remain unchanged …
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     tb = "".join(traceback.format_exception(None, context.error, context.error.__traceback__))
     await log_to_group(app.bot, f"❗️ Unhandled error:\n<pre>{tb}</pre>")
 
-# ── Main Entrypoint ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.run_until_complete(init_db())
@@ -262,13 +264,12 @@ if __name__ == "__main__":
     loop.create_task(track_loop())
 
     app = ApplicationBuilder().token(TOKEN).build()
-    # register handlers
     app.add_handler(CommandHandler("start",       start_cmd))
     app.add_handler(CommandHandler("ping",        ping))
     app.add_handler(CommandHandler("addaccount",  addaccount))
     app.add_handler(CommandHandler("removeaccount",removeaccount))
     app.add_handler(CommandHandler("userstats",   userstats))
-    # … register the rest …
+    # … register the rest of your handlers here …
     app.add_error_handler(error_handler)
 
     print("🤖 Bot running in polling mode…")
