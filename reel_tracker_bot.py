@@ -255,13 +255,23 @@ if __name__ == "__main__":
     loop.create_task(track_loop())
 
     app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start",       start_cmd))
-    app.add_handler(CommandHandler("ping",        ping))
-    app.add_handler(CommandHandler("addaccount",  addaccount))
-    app.add_handler(CommandHandler("removeaccount",removeaccount))
-    app.add_handler(CommandHandler("userstats",   userstats))
-    # … register submit, stats, remove, adminstats, auditlog, broadcast, deleteuser, deletereel …
-    app.add_error_handler(error_handler)
+
+# Register every command your bot supports
+app.add_handler(CommandHandler("start",       start_cmd))
+app.add_handler(CommandHandler("ping",        ping))
+app.add_handler(CommandHandler("addaccount",  addaccount))
+app.add_handler(CommandHandler("removeaccount", removeaccount))
+app.add_handler(CommandHandler("userstats",   userstats))
+app.add_handler(CommandHandler("submit",      submit))
+app.add_handler(CommandHandler("stats",       stats))
+app.add_handler(CommandHandler("remove",      remove))
+app.add_handler(CommandHandler("adminstats",  adminstats))
+app.add_handler(CommandHandler("auditlog",    auditlog))
+app.add_handler(CommandHandler("broadcast",   broadcast))
+app.add_handler(CommandHandler("deleteuser",  deleteuser))
+app.add_handler(CommandHandler("deletereel",  deletereel))
+
+app.add_error_handler(error_handler)
 
     print("🤖 Bot running in polling mode…")
     app.run_polling(drop_pending_updates=True, close_loop=False)
