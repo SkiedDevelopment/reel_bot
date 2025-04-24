@@ -1,6 +1,7 @@
-python-telegram-bot[webhooks]==20.3
+python-telegram-bot==20.3
 instaloader
 nest_asyncio
 aiohttp
 SQLAlchemy[asyncio]
 asyncpg
+requests
