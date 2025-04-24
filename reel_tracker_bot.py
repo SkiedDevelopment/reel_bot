@@ -22,13 +22,13 @@ COOLDOWN_SEC = 60
 if not TOKEN or not DATABASE_URL:
     sys.exit("❌ TOKEN and DATABASE_URL must be set in .env")
 
-# normalize asyncpg URL
+# Normalize to asyncpg
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
 elif DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-# delete any previous webhook to avoid conflicts
+# Clear any old webhook
 try:
     requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook?drop_pending_updates=true")
 except:
@@ -85,7 +85,9 @@ def extract_shortcode(link: str) -> str | None:
     return m.group(1) if m else None
 
 def is_admin(uid: int) -> bool:
-    return str(uid) in ADMIN_IDS
+    val = str(uid)
+    print(f"DEBUG is_admin? uid={val}, ADMIN_IDS={ADMIN_IDS}")
+    return val in ADMIN_IDS
 
 async def log_to_group(bot, msg: str):
     if LOG_GROUP_ID:
@@ -94,7 +96,7 @@ async def log_to_group(bot, msg: str):
         except:
             pass
 
-# ── Background View Tracking ────────────────────────────────────────────────────
+# ── Background view tracker ─────────────────────────────────────────────────────
 async def track_all_views():
     loader = instaloader.Instaloader()
     async with AsyncSessionLocal() as session:
@@ -135,13 +137,13 @@ async def start_health():
 # ── Command Handlers ────────────────────────────────────────────────────────────
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Welcome!\n"
+        "👋 Welcome to ReelTracker!\n"
         "Use /ping to check I’m alive.\n\n"
-        "Users:\n"
+        "User:\n"
         "/submit <Reel URL>\n"
         "/stats\n"
         "/remove <Reel URL>\n\n"
-        "Admins:\n"
+        "Admin:\n"
         "/addaccount <tg_id> @handle\n"
         "/removeaccount <tg_id> @handle\n"
         "/userstats <tg_id>\n"
@@ -156,12 +158,12 @@ async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🏓 Pong! Bot is active and ready.")
 
 async def addaccount(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user=update.effective_user
+    user = update.effective_user
     if not is_admin(user.id):
         return await update.message.reply_text("❌ You’re not authorized.")
-    if len(context.args)!=2:
+    if len(context.args) != 2:
         return await update.message.reply_text("❌ Usage: /addaccount <tg_id> @handle")
-    tgt,hdl=context.args
+    tgt,hdl = context.args
     if not hdl.startswith("@"):
         return await update.message.reply_text("❌ Handle must start with '@'.")
     try:
@@ -169,210 +171,216 @@ async def addaccount(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await s.execute(text(
                 "INSERT INTO user_accounts (user_id, insta_handle) "
                 "VALUES (:u,:h) ON CONFLICT (user_id,insta_handle) DO NOTHING"
-            ),{"u":int(tgt),"h":hdl})
+            ), {"u": int(tgt), "h": hdl})
             await s.commit()
         await update.message.reply_text(f"✅ Assigned {hdl} to {tgt}.")
-        await log_to_group(context.bot,f"Admin @{user.username} assigned {hdl} to {tgt}")
+        await log_to_group(context.bot, f"Admin @{user.username} assigned {hdl} to {tgt}")
     except Exception:
         await update.message.reply_text("⚠️ Couldn’t assign—admin notified.")
-        tb=traceback.format_exc()
-        await log_to_group(context.bot,f"Error in /addaccount:\n<pre>{tb}</pre>")
+        tb = traceback.format_exc()
+        await log_to_group(context.bot, f"Error in /addaccount:\n<pre>{tb}</pre>")
 
 async def removeaccount(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user=update.effective_user
+    user = update.effective_user
     if not is_admin(user.id):
         return await update.message.reply_text("❌ You’re not authorized.")
-    if len(context.args)!=2:
+    if len(context.args) != 2:
         return await update.message.reply_text("❌ Usage: /removeaccount <tg_id> @handle")
-    tgt,hdl=context.args
+    tgt,hdl = context.args
     try:
         async with AsyncSessionLocal() as s:
-            res=await s.execute(text(
+            res = await s.execute(text(
                 "DELETE FROM user_accounts WHERE user_id=:u AND insta_handle=:h RETURNING *"
-            ),{"u":int(tgt),"h":hdl})
+            ), {"u": int(tgt), "h": hdl})
             await s.commit()
         if res.rowcount:
             await update.message.reply_text(f"✅ Removed {hdl} from {tgt}.")
-            await log_to_group(context.bot,f"Admin @{user.username} removed {hdl} from {tgt}")
+            await log_to_group(context.bot, f"Admin @{user.username} removed {hdl} from {tgt}")
         else:
             await update.message.reply_text("⚠️ No such assignment found.")
     except Exception:
         await update.message.reply_text("⚠️ Couldn’t remove—admin notified.")
-        tb=traceback.format_exc()
-        await log_to_group(context.bot,f"Error in /removeaccount:\n<pre>{tb}</pre>")
+        tb = traceback.format_exc()
+        await log_to_group(context.bot, f"Error in /removeaccount:\n<pre>{tb}</pre>")
 
 async def userstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user=update.effective_user
-    if not is_admin(user.id) or len(context.args)!=1:
+    user = update.effective_user
+    if not is_admin(user.id) or len(context.args) != 1:
         return await update.message.reply_text("❌ Usage: /userstats <tg_id>")
-    tgt=int(context.args[0])
+    tgt = int(context.args[0])
     async with AsyncSessionLocal() as s:
-        hres=await s.execute(text("SELECT insta_handle FROM user_accounts WHERE user_id=:u"),{"u":tgt})
-        handles=[r[0] for r in hres.fetchall()]
-        rres=await s.execute(text("SELECT id,shortcode FROM reels WHERE user_id=:u"),{"u":tgt})
-        reels=rres.fetchall()
-    total=0; details=[]
-    for rid,sc in reels:
-        row=(await s.execute(text(
+        hres = await s.execute(text("SELECT insta_handle FROM user_accounts WHERE user_id=:u"), {"u": tgt})
+        handles = [r[0] for r in hres.fetchall()]
+        rres = await s.execute(text("SELECT id, shortcode FROM reels WHERE user_id=:u"), {"u": tgt})
+        reels = rres.fetchall()
+    total, details = 0, []
+    for rid, sc in reels:
+        row = (await s.execute(text(
             "SELECT count FROM views WHERE reel_id=:r ORDER BY timestamp DESC LIMIT 1"
-        ),{"r":rid})).fetchone()
-        cnt=row[0] if row else 0; total+=cnt; details.append((sc,cnt))
-    details.sort(key=lambda x:x[1],reverse=True)
-    lines=[f"Stats for {tgt}:",
-           f"• Accounts: {', '.join(handles) or 'None'}",
-           f"• Videos: {len(reels)}",
-           f"• Views: {total}",
-           "Reels (high→low):"]
-    for i,(sc,cnt) in enumerate(details,1):
+        ), {"r": rid})).fetchone()
+        cnt = row[0] if row else 0
+        total += cnt
+        details.append((sc, cnt))
+    details.sort(key=lambda x: x[1], reverse=True)
+    lines = [
+        f"Stats for {tgt}:",
+        f"• Accounts: {', '.join(handles) or 'None'}",
+        f"• Videos: {len(reels)}",
+        f"• Views: {total}",
+        "Reels (high→low):"
+    ]
+    for i, (sc, cnt) in enumerate(details, 1):
         lines.append(f"{i}. https://instagram.com/reel/{sc} – {cnt} views")
     await update.message.reply_text("\n".join(lines))
 
 async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         return await update.message.reply_text("❌ Usage: /submit <Reel URL>")
-    uid=update.effective_user.id; now=datetime.now()
+    uid, now = update.effective_user.id, datetime.now()
     # cooldown
     async with AsyncSessionLocal() as s:
-        row=(await s.execute(text(
+        row = (await s.execute(text(
             "SELECT last_submit FROM cooldowns WHERE user_id=:u"
-        ),{"u":uid})).fetchone()
+        ), {"u": uid})).fetchone()
         if row:
-            last=datetime.fromisoformat(row[0])
-            rem=COOLDOWN_SEC-(now-last).total_seconds()
-            if rem>0:
-                msg=await update.message.reply_text(f"⌛ Wait {int(rem)}s.")
+            last = datetime.fromisoformat(row[0])
+            rem = COOLDOWN_SEC - (now - last).total_seconds()
+            if rem > 0:
+                msg = await update.message.reply_text(f"⌛ Wait {int(rem)}s.")
                 asyncio.create_task(asyncio.sleep(5)
-                    and context.bot.delete_message(update.effective_chat.id,msg.message_id))
+                    and context.bot.delete_message(update.effective_chat.id, msg.message_id))
                 return
         await s.execute(text(
             "INSERT INTO cooldowns (user_id,last_submit) VALUES (:u,:t) "
             "ON CONFLICT (user_id) DO UPDATE SET last_submit=EXCLUDED.last_submit"
-        ),{"u":uid,"t":now.isoformat()})
+        ), {"u": uid, "t": now.isoformat()})
         await s.commit()
-    sc=extract_shortcode(context.args[0])
+    sc = extract_shortcode(context.args[0])
     if not sc:
         return await update.message.reply_text("❌ Invalid Reel URL.")
     async with AsyncSessionLocal() as s:
-        arec=await s.execute(text(
+        arec = await s.execute(text(
             "SELECT insta_handle FROM user_accounts WHERE user_id=:u"
-        ),{"u":uid})
-        allowed=[r[0].lstrip("@").lower() for r in arec.fetchall()]
+        ), {"u": uid})
+        allowed = [r[0].lstrip("@").lower() for r in arec.fetchall()]
     if not allowed:
         return await update.message.reply_text("⚠️ No account assigned. Ask admin.")
-    loader=instaloader.Instaloader()
+    loader = instaloader.Instaloader()
     try:
-        post=instaloader.Post.from_shortcode(loader.context,sc)
+        post = instaloader.Post.from_shortcode(loader.context, sc)
     except:
         return await update.message.reply_text("⚠️ Couldn’t fetch reel; must be public.")
     if post.owner_username.lower() not in allowed:
-        return await update.message.reply_text(
-            f"❌ Reel not from your account(s): {', '.join('@'+a for a in allowed)}"
-        )
-    ts=now.strftime("%Y-%m-%d %H:%M:%S"); v0=post.video_view_count
+        return await update.message.reply_text(f"❌ Reel not from your account(s): {', '.join('@'+a for a in allowed)}")
+    ts, v0 = now.strftime("%Y-%m-%d %H:%M:%S"), post.video_view_count
     async with AsyncSessionLocal() as s:
         await s.execute(text(
             "INSERT INTO users (user_id,username) VALUES (:u,:n) "
             "ON CONFLICT (user_id) DO UPDATE SET username=EXCLUDED.username"
-        ),{"u":uid,"n":update.effective_user.username or ""})
+        ), {"u": uid, "n": update.effective_user.username or ""})
         try:
             await s.execute(text(
                 "INSERT INTO reels (user_id,shortcode,username) VALUES (:u,:c,:n)"
-            ),{"u":uid,"c":sc,"n":post.owner_username})
+            ), {"u": uid, "c": sc, "n": post.owner_username})
             await s.execute(text(
                 "INSERT INTO views (reel_id,timestamp,count) VALUES ("
                 "(SELECT id FROM reels WHERE user_id=:u AND shortcode=:c),:t,:v)"
-            ),{"u":uid,"c":sc,"t":ts,"v":v0})
+            ), {"u": uid, "c": sc, "t": ts, "v": v0})
             await s.execute(text(
                 "INSERT INTO audit (user_id,action,shortcode,timestamp) VALUES "
                 "(:u,'submitted',:c,:t)"
-            ),{"u":uid,"c":sc,"t":ts})
+            ), {"u": uid, "c": sc, "t": ts})
             await s.commit()
             await update.message.reply_text(f"✅ @{post.owner_username} submitted ({v0} views).")
         except:
             return await update.message.reply_text("⚠️ You already submitted that reel.")
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid=update.effective_user.id
+    uid = update.effective_user.id
     async with AsyncSessionLocal() as s:
-        rres=await s.execute(text("SELECT id,username FROM reels WHERE user_id=:u"),{"u":uid})
-        reels=rres.fetchall()
+        rres = await s.execute(text("SELECT id,username FROM reels WHERE user_id=:u"), {"u": uid})
+        reels = rres.fetchall()
     if not reels:
         return await update.message.reply_text("📭 You have no tracked reels.")
-    total=0; details=[]
+    total, details = 0, []
     async with AsyncSessionLocal() as s:
-        for rid,uname in reels:
-            row=(await s.execute(text(
+        for rid, uname in reels:
+            row = (await s.execute(text(
                 "SELECT count FROM views WHERE reel_id=:r ORDER BY timestamp DESC LIMIT 1"
-            ),{"r":rid})).fetchone()
-            cnt=row[0] if row else 0; total+=cnt; details.append((uname,cnt))
-    details.sort(key=lambda x:x[1],reverse=True)
-    lines=["Your stats:",
-           f"• Videos: {len(reels)}",
-           f"• Views: {total}",
-           "Reels (high→low):"]
-    for i,(u,v) in enumerate(details,1):
+            ), {"r": rid})).fetchone()
+            cnt = row[0] if row else 0
+            total += cnt
+            details.append((uname, cnt))
+    details.sort(key=lambda x: x[1], reverse=True)
+    lines = ["Your stats:",
+             f"• Videos: {len(reels)}",
+             f"• Views: {total}",
+             "Reels (high→low):"]
+    for i, (u, v) in enumerate(details, 1):
         lines.append(f"{i}. @{u} – {v} views")
     await update.message.reply_text("\n".join(lines))
 
 async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         return await update.message.reply_text("❌ Usage: /remove <Reel URL>")
-    uid=update.effective_user.id; sc=extract_shortcode(context.args[0])
+    uid = update.effective_user.id
+    sc = extract_shortcode(context.args[0])
     if not sc:
         return await update.message.reply_text("❌ Invalid URL.")
     async with AsyncSessionLocal() as s:
-        row=(await s.execute(text(
+        row = (await s.execute(text(
             "SELECT id FROM reels WHERE user_id=:u AND shortcode=:c"
-        ),{"u":uid,"c":sc})).fetchone()
+        ), {"u": uid, "c": sc})).fetchone()
         if not row:
             return await update.message.reply_text("⚠️ That reel isn’t tracked by you.")
-        rid=row[0]
-        await s.execute(text("DELETE FROM views WHERE reel_id=:r"),{"r":rid})
-        await s.execute(text("DELETE FROM reels WHERE id=:r"),{"r":rid})
+        rid = row[0]
+        await s.execute(text("DELETE FROM views WHERE reel_id=:r"), {"r": rid})
+        await s.execute(text("DELETE FROM reels WHERE id=:r"), {"r": rid})
         await s.execute(text(
             "INSERT INTO audit (user_id,action,shortcode,timestamp) VALUES "
             "(:u,'removed',:c,:t)"
-        ),{"u":uid,"c":sc,"t":datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+        ), {"u": uid, "c": sc, "t": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
         await s.commit()
     await update.message.reply_text(f"🗑 Removed reel {sc}.")
 
 async def adminstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return await update.message.reply_text("❌ You’re not authorized.")
-    data=[]
+    data = []
     async with AsyncSessionLocal() as s:
-        users=(await s.execute(text("SELECT user_id,username FROM users"))).all()
-    for uid,uname in users:
+        users = (await s.execute(text("SELECT user_id,username FROM users"))).all()
+    for uid, uname in users:
         async with AsyncSessionLocal() as s:
-            reels=(await s.execute(text(
+            reels = (await s.execute(text(
                 "SELECT id,shortcode FROM reels WHERE user_id=:u"
-            ),{"u":uid})).all()
-        tv=0; det=[]
-        for rid,code in reels:
-            row=(await s.execute(text(
+            ), {"u": uid})).all()
+        tv, det = 0, []
+        for rid, code in reels:
+            row = (await s.execute(text(
                 "SELECT count FROM views WHERE reel_id=:r ORDER BY timestamp DESC LIMIT 1"
-            ),{"r":rid})).fetchone()
-            cnt=row[0] if row else 0; tv+=cnt; det.append((code,cnt))
-        det.sort(key=lambda x:x[1],reverse=True)
-        data.append((uname or str(uid),len(reels),tv,det))
-    data.sort(key=lambda x:x[2],reverse=True)
-    lines=[]
-    for uname,vids,views,det in data:
+            ), {"r": rid})).fetchone()
+            cnt = row[0] if row else 0
+            tv += cnt; det.append((code, cnt))
+        det.sort(key=lambda x: x[1], reverse=True)
+        data.append((uname or str(uid), len(reels), tv, det))
+    data.sort(key=lambda x: x[2], reverse=True)
+    lines = []
+    for uname, vids, views, det in data:
         lines.append(f"@{uname} • vids={vids} views={views}")
-        for code,cnt in det:
+        for code, cnt in det:
             lines.append(f"  - https://instagram.com/reel/{code} → {cnt}")
         lines.append("")
-    fn="/tmp/admin_stats.txt"
-    open(fn,"w").write("\n".join(lines))
-    await update.message.reply_document(open(fn,"rb"),filename="admin_stats.txt")
+    fn = "/tmp/admin_stats.txt"
+    open(fn, "w").write("\n".join(lines))
+    await update.message.reply_document(open(fn, "rb"), filename="admin_stats.txt")
 
 async def auditlog(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return await update.message.reply_text("❌ You’re not authorized.")
-    rows=(await AsyncSessionLocal().execute(text(
+    rows = (await AsyncSessionLocal().execute(text(
         "SELECT user_id,action,shortcode,timestamp FROM audit ORDER BY id DESC LIMIT 20"
     ))).all()
-    lines=["Recent activity:"]
+    lines = ["Recent activity:"]
     for u,a,c,t in rows:
         lines.append(f"{t} — {u} {a} {c}")
     await update.message.reply_text("\n".join(lines))
@@ -380,11 +388,11 @@ async def auditlog(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id) or not context.args:
         return await update.message.reply_text("❌ Usage: /broadcast <message>")
-    msg="📢 "+" ".join(context.args)
+    msg = "📢 " + " ".join(context.args)
     async with AsyncSessionLocal() as s:
-        users=(await s.execute(text("SELECT user_id FROM users"))).all()
+        users = (await s.execute(text("SELECT user_id FROM users"))).all()
     for (u,) in users:
-        try: await context.bot.send_message(u,msg)
+        try: await context.bot.send_message(u, msg)
         except: pass
     await update.message.reply_text("✅ Broadcast sent.")
 
