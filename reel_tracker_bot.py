@@ -139,7 +139,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🚀 Welcome to DLS Stats Tracker — Your Instagram Reel Insights Partner\n\n"
         "Get Started:\n"
-        "/submit <Reel URL>  — SUbmit your reels to track\n"
+        "/submit <Reel URL>  — Submit your reels to track\n"
         "/stats              — See your total reels and latest view counts\n"
         "/remove <Reel URL>  — Remove your previously submitted reel"
     )
