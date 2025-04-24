@@ -137,21 +137,11 @@ async def start_health():
 # ── Command Handlers ────────────────────────────────────────────────────────────
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Welcome to ReelTracker!\n"
-        "Use /ping to check I’m alive.\n\n"
-        "User:\n"
-        "/submit <Reel URL>\n"
-        "/stats\n"
-        "/remove <Reel URL>\n\n"
-        "Admin:\n"
-        "/addaccount <tg_id> @handle\n"
-        "/removeaccount <tg_id> @handle\n"
-        "/userstats <tg_id>\n"
-        "/adminstats\n"
-        "/auditlog\n"
-        "/broadcast <msg>\n"
-        "/deleteuser <tg_id>\n"
-        "/deletereel <shortcode>"
+        "🚀 Welcome to DLS Stats Tracker — Your Instagram Reel Insights Partner\n\n"
+        "Get Started:\n"
+        "/submit <Reel URL>  — SUbmit your reels to track\n"
+        "/stats              — See your total reels and latest view counts\n"
+        "/remove <Reel URL>  — Remove your previously submitted reel"
     )
 
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
