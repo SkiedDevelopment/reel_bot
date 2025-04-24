@@ -18,7 +18,7 @@ from sqlalchemy import text
 import nest_asyncio
 nest_asyncio.apply()
 
-# ── Configuration ───────────────────────────────────────────────────────────────
+# ── Config ──────────────────────────────────────────────────────────────────────
 TOKEN        = os.getenv("TOKEN")
 ADMIN_IDS    = [aid.strip() for aid in os.getenv("ADMIN_ID","").split(",") if aid.strip()]
 LOG_GROUP_ID = os.getenv("LOG_GROUP_ID")
@@ -27,21 +27,21 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 COOLDOWN_SEC = 60
 
 if not TOKEN or not DATABASE_URL:
-    sys.exit("❌ TOKEN and DATABASE_URL must be set in your .env")
+    sys.exit("❌ TOKEN and DATABASE_URL must be set")
 
-# Normalize asyncpg URL
+# normalize URL
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
 elif DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-# Clear old webhook
+# clear any webhook
 try:
     requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook?drop_pending_updates=true")
 except:
     pass
 
-# ── Database setup ───────────────────────────────────────────────────────────────
+# ── DB setup ─────────────────────────────────────────────────────────────────────
 engine = create_async_engine(DATABASE_URL, future=True)
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -101,7 +101,7 @@ async def log_to_group(bot, text: str):
         except:
             pass
 
-# ── Background tracking ──────────────────────────────────────────────────────────
+# ── Track loop ──────────────────────────────────────────────────────────────────
 async def track_all_views():
     L = instaloader.Instaloader()
     async with AsyncSessionLocal() as session:
@@ -139,33 +139,23 @@ async def start_health():
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
 
-# ── Command handlers ────────────────────────────────────────────────────────────
+# ── Handlers ─────────────────────────────────────────────────────────────────────
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Welcome to ReelTracker!\n"
-        "Use /ping to check I’m alive.\n\n"
-        "User commands:\n"
-        "/submit <Reel URL>\n"
-        "/stats\n"
-        "/remove <Reel URL>\n\n"
-        "Admin commands:\n"
-        "/addaccount <tg_id> @handle\n"
-        "/removeaccount <tg_id> @handle\n"
-        "/userstats <tg_id>\n"
-        "/adminstats\n"
-        "/auditlog\n"
-        "/broadcast <msg>\n"
-        "/deleteuser <tg_id>\n"
-        "/deletereel <shortcode>"
+        "👋 Welcome!\nUse /ping to check I’m alive.\n\n"
+        "User:\n/submit <Reel URL>\n/stats\n/remove <Reel URL>\n\n"
+        "Admin:\n/addaccount <tg_id> @handle\n/removeaccount <tg_id> @handle\n"
+        "/userstats <tg_id>\n/adminstats\n/auditlog\n/broadcast <msg>\n"
+        "/deleteuser <tg_id>\n/deletereel <shortcode>"
     )
 
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🏓 Pong! Bot is active and ready.")
+    await update.message.reply_text("🏓 Pong! Bot is active.")
 
 async def addaccount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not is_admin(user.id):
-        return await update.message.reply_text("❌ You’re not authorized.")
+        return await update.message.reply_text("❌ Not authorized.")
     if len(context.args) != 2:
         return await update.message.reply_text("❌ Usage: /addaccount <tg_id> @handle")
     target, handle = context.args
@@ -178,17 +168,17 @@ async def addaccount(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 {"u": int(target), "h": handle}
             )
             await s.commit()
-        await update.message.reply_text(f"✅ Assigned {handle} to user {target}.")
+        await update.message.reply_text(f"✅ Assigned {handle} to {target}.")
         await log_to_group(context.bot, f"Admin @{user.username} assigned {handle} to {target}")
     except Exception:
-        await update.message.reply_text("⚠️ Couldn’t assign account—admin notified.")
+        await update.message.reply_text("⚠️ Couldn’t assign—admin notified.")
         tb = traceback.format_exc()
         await log_to_group(context.bot, f"Error in /addaccount:\n<pre>{tb}</pre>")
 
 async def removeaccount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not is_admin(user.id):
-        return await update.message.reply_text("❌ You’re not authorized.")
+        return await update.message.reply_text("❌ Not authorized.")
     if len(context.args) != 2:
         return await update.message.reply_text("❌ Usage: /removeaccount <tg_id> @handle")
     target, handle = context.args
@@ -200,12 +190,12 @@ async def removeaccount(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             await s.commit()
         if res.rowcount:
-            await update.message.reply_text(f"✅ Removed {handle} from user {target}.")
+            await update.message.reply_text(f"✅ Removed {handle} from {target}.")
             await log_to_group(context.bot, f"Admin @{user.username} removed {handle} from {target}")
         else:
-            await update.message.reply_text("⚠️ No such assignment found.")
+            await update.message.reply_text("⚠️ No such assignment.")
     except Exception:
-        await update.message.reply_text("⚠️ Couldn’t remove account—admin notified.")
+        await update.message.reply_text("⚠️ Couldn’t remove—admin notified.")
         tb = traceback.format_exc()
         await log_to_group(context.bot, f"Error in /removeaccount:\n<pre>{tb}</pre>")
 
@@ -213,19 +203,18 @@ async def userstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not is_admin(user.id) or len(context.args) != 1:
         return await update.message.reply_text("❌ Usage: /userstats <tg_id>")
-    target = int(context.args[0])
 
+    target = int(context.args[0])
     async with AsyncSessionLocal() as s:
-        res1 = await s.execute(
-            text("SELECT insta_handle FROM user_accounts WHERE user_id=:u"),
-            {"u": target}
+        handles_res = await s.execute(
+            text("SELECT insta_handle FROM user_accounts WHERE user_id=:u"), {"u": target}
         )
-        handles = [row[0] for row in res1.all()]
-        res2 = await s.execute(
-            text("SELECT id, shortcode FROM reels WHERE user_id=:u"),
-            {"u": target}
+        handles = [r[0] for r in handles_res.fetchall()]
+
+        reels_res = await s.execute(
+            text("SELECT id, shortcode FROM reels WHERE user_id=:u"), {"u": target}
         )
-        reels = res2.all()
+        reels = reels_res.fetchall()
 
     total_views = 0
     details = []
@@ -251,12 +240,13 @@ async def userstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("\n".join(lines))
 
-# … rest of handlers (submit, stats, remove, adminstats, auditlog, broadcast, deleteuser, deletereel) remain unchanged …
+# … (other handlers: submit, stats, remove, adminstats, auditlog, broadcast, deleteuser, deletereel) …
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     tb = "".join(traceback.format_exception(None, context.error, context.error.__traceback__))
     await log_to_group(app.bot, f"❗️ Unhandled error:\n<pre>{tb}</pre>")
 
+# ── Main ─────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.run_until_complete(init_db())
@@ -269,7 +259,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("addaccount",  addaccount))
     app.add_handler(CommandHandler("removeaccount",removeaccount))
     app.add_handler(CommandHandler("userstats",   userstats))
-    # … register the rest of your handlers here …
+    # … register the rest …
     app.add_error_handler(error_handler)
 
     print("🤖 Bot running in polling mode…")
