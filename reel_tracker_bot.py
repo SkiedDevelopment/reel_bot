@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-import os, sys, re, asyncio, traceback, requests, instaloader
+import os
+import sys
+import re
+import asyncio
+import traceback
+import requests
+import instaloader
+
 from datetime import datetime
 from aiohttp import web
 from telegram import Update
@@ -7,34 +14,34 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import text
-import nest_asyncio
 
+import nest_asyncio
 nest_asyncio.apply()
 
 # ── Configuration ───────────────────────────────────────────────────────────────
 TOKEN        = os.getenv("TOKEN")
-ADMIN_IDS    = [x.strip() for x in os.getenv("ADMIN_ID","").split(",") if x.strip()]
+ADMIN_IDS    = [x.strip() for x in os.getenv("ADMIN_ID", "").split(",") if x.strip()]
 LOG_GROUP_ID = os.getenv("LOG_GROUP_ID")
 PORT         = int(os.getenv("PORT", "10000"))
 DATABASE_URL = os.getenv("DATABASE_URL")
-COOLDOWN_SEC = 60  # seconds between /submit
+COOLDOWN_SEC = 60  # seconds
 
 if not TOKEN or not DATABASE_URL:
-    sys.exit("❌ TOKEN and DATABASE_URL must be set in your .env")
+    sys.exit("❌ You must set TOKEN and DATABASE_URL in .env")
 
-# normalize Postgres URL to asyncpg
+# Normalize Postgres URL to asyncpg
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
 elif DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-# clear any old webhook (avoids Conflict errors)
+# Clear any old webhook
 try:
     requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook?drop_pending_updates=true")
 except:
     pass
 
-# ── Database setup ───────────────────────────────────────────────────────────────
+# ── Database Setup ───────────────────────────────────────────────────────────────
 engine = create_async_engine(DATABASE_URL, future=True)
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -75,12 +82,12 @@ async def init_db():
     """
     async with engine.begin() as conn:
         for stmt in ddl.split(";"):
-            s = stmt.strip()
-            if s:
-                await conn.execute(text(s))
+            stmt = stmt.strip()
+            if stmt:
+                await conn.execute(text(stmt))
 
 # ── Helpers ──────────────────────────────────────────────────────────────────────
-def extract_shortcode(link: str) -> str|None:
+def extract_shortcode(link: str) -> str | None:
     m = re.search(r"instagram\.com/reel/([^/?]+)", link)
     return m.group(1) if m else None
 
@@ -94,19 +101,19 @@ async def log_to_group(bot, msg: str):
         except:
             pass
 
-# ── Background view tracker ─────────────────────────────────────────────────────
+# ── Background View Tracking ────────────────────────────────────────────────────
 async def track_all_views():
     loader = instaloader.Instaloader()
     async with AsyncSessionLocal() as session:
         rows = (await session.execute(text("SELECT id, shortcode FROM reels"))).all()
-    for reel_id, sc in rows:
+    for reel_id, code in rows:
         for _ in range(3):
             try:
-                post = instaloader.Post.from_shortcode(loader.context, sc)
+                post = instaloader.Post.from_shortcode(loader.context, code)
                 ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 async with AsyncSessionLocal() as s2:
                     await s2.execute(
-                        text("INSERT INTO views (reel_id, timestamp, count) VALUES (:r,:t,:c)"),
+                        text("INSERT INTO views (reel_id, timestamp, count) VALUES (:r, :t, :c)"),
                         {"r": reel_id, "t": ts, "c": post.video_view_count}
                     )
                     await s2.commit()
@@ -120,7 +127,7 @@ async def track_loop():
         await track_all_views()
         await asyncio.sleep(12 * 3600)
 
-# ── Health endpoint ─────────────────────────────────────────────────────────────
+# ── Health Endpoint ─────────────────────────────────────────────────────────────
 async def health(request: web.Request) -> web.Response:
     return web.Response(text="OK")
 
@@ -129,7 +136,7 @@ async def start_health():
     app.router.add_get("/health", health)
     runner = web.AppRunner(app)
     await runner.setup()
-    site   = web.TCPSite(runner, "0.0.0.0", PORT)
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
 
 # ── Command Handlers ────────────────────────────────────────────────────────────
@@ -137,11 +144,11 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Welcome to ReelTracker!\n"
         "Use /ping to check I’m alive.\n\n"
-        "Users:\n"
+        "User commands:\n"
         "/submit <Reel URL>\n"
         "/stats\n"
         "/remove <Reel URL>\n\n"
-        "Admins:\n"
+        "Admin commands:\n"
         "/addaccount <tg_id> @handle\n"
         "/removeaccount <tg_id> @handle\n"
         "/userstats <tg_id>\n"
@@ -159,7 +166,7 @@ async def addaccount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not is_admin(user.id):
         return await update.message.reply_text("❌ You’re not authorized.")
-    if len(context.args)!=2:
+    if len(context.args) != 2:
         return await update.message.reply_text("❌ Usage: /addaccount <tg_id> @handle")
     target, handle = context.args
     if not handle.startswith("@"):
@@ -182,7 +189,7 @@ async def removeaccount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not is_admin(user.id):
         return await update.message.reply_text("❌ You’re not authorized.")
-    if len(context.args)!=2:
+    if len(context.args) != 2:
         return await update.message.reply_text("❌ Usage: /removeaccount <tg_id> @handle")
     target, handle = context.args
     try:
@@ -203,7 +210,7 @@ async def removeaccount(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def userstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if not is_admin(user.id) or len(context.args)!=1:
+    if not is_admin(user.id) or len(context.args) != 1:
         return await update.message.reply_text("❌ Usage: /userstats <tg_id>")
     target = int(context.args[0])
 
@@ -236,12 +243,13 @@ async def userstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Views: {total}",
         "Reels (high→low):"
     ]
-    for i,(c,v) in enumerate(details,1):
+    for i, (c, v) in enumerate(details, 1):
         lines.append(f"{i}. https://instagram.com/reel/{c} – {v} views")
 
     await update.message.reply_text("\n".join(lines))
 
-# … (submit, stats, remove, adminstats, auditlog, broadcast, deleteuser, deletereel remain unchanged) …
+# (Define submit, stats, remove, adminstats, auditlog, broadcast, deleteuser, deletereel
+#  exactly as in prior full version—you must have those here too)
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     tb = "".join(traceback.format_exception(None, context.error, context.error.__traceback__))
@@ -255,8 +263,7 @@ if __name__ == "__main__":
     loop.create_task(track_loop())
 
     app = ApplicationBuilder().token(TOKEN).build()
-
-    # Register all commands
+    # register every command handler:
     app.add_handler(CommandHandler("start",        start_cmd))
     app.add_handler(CommandHandler("ping",         ping))
     app.add_handler(CommandHandler("addaccount",   addaccount))
