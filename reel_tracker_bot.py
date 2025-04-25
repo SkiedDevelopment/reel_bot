@@ -230,6 +230,44 @@ async def logtest(update:Update,context:ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Check your log group now.")
 # === Part 2 of 2 ===
 
++@debug_entry
++async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /remove <Reel URL> — stop tracking one of your reels
+    """
+    if not context.args:
+        return await update.message.reply_text("❌ Usage: /remove <Reel URL>")
+    uid = update.effective_user.id
+    sc = extract_shortcode(context.args[0])
+    if not sc:
+        return await update.message.reply_text("❌ Invalid URL.")
+    async with AsyncSessionLocal() as s:
+        row = (
+            await s.execute(
+                text("SELECT id FROM reels WHERE user_id=:u AND shortcode=:c"),
+                {"u": uid, "c": sc},
+            )
+        ).fetchone()
+        if not row:
+            return await update.message.reply_text("⚠️ Not tracked.")
+        rid = row[0]
+        # delete views + reel + audit
+        await s.execute(text("DELETE FROM views WHERE reel_id=:r"), {"r": rid})
+        await s.execute(text("DELETE FROM reels WHERE id=:r"), {"r": rid})
+        await s.execute(
+            text(
+                "INSERT INTO audit (user_id,action,shortcode,timestamp) VALUES "
+                "(:u,'removed',:c,:t)"
+            ),
+            {
+                "u": uid,
+                "c": sc,
+                "t": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            },
+        )
+        await s.commit()
+    await update.message.reply_text(f"🗑 Removed {sc}.")
+
 @debug_entry
 async def submit(update:Update,context:ContextTypes.DEFAULT_TYPE):
     if not context.args:
