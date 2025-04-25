@@ -6,4 +6,4 @@ SQLAlchemy[asyncio]
 asyncpg
 python-dotenv
 nest_asyncio
-
+requests>=2.28.0
