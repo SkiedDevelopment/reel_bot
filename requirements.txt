@@ -1,7 +1,9 @@
 python-telegram-bot==20.3
 instaloader
-nest_asyncio
+httpx
 aiohttp
 SQLAlchemy[asyncio]
 asyncpg
-requests
+python-dotenv
+nest_asyncio
+
