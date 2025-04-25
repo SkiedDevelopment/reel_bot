@@ -4,38 +4,33 @@ import sys
 import re
 import asyncio
 import traceback
+import requests
 import httpx
-import instaloader
-from instaloader import Profile
 from datetime import datetime
 from aiohttp import web
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
-    ConversationHandler,
-    MessageHandler,
-    filters,
     ContextTypes,
 )
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import text
 from dotenv import load_dotenv
+import nest_asyncio
 
-# ── Load environment ─────────────────────────────────────────────────────────────
-load_dotenv()  # reads .env into os.environ
+# ── Load .env and apply nest_asyncio ────────────────────────────────────────────
+load_dotenv()            # Read TOKEN, DATABASE_URL, etc.
+nest_asyncio.apply()     # Allow nested event loops
 
+# ── Configuration ───────────────────────────────────────────────────────────────
 TOKEN        = os.getenv("TOKEN")
 ADMIN_IDS    = [x.strip() for x in os.getenv("ADMIN_ID","").split(",") if x.strip()]
 LOG_GROUP_ID = os.getenv("LOG_GROUP_ID")
 PORT         = int(os.getenv("PORT","10000"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 COOLDOWN_SEC = int(os.getenv("COOLDOWN_SEC","60"))
-
-IG_USERNAME  = os.getenv("IG_USERNAME")
-IG_PASSWORD  = os.getenv("IG_PASSWORD")
-SESSION_FILE = f"{IG_USERNAME}.session" if IG_USERNAME else None
 
 if not TOKEN or not DATABASE_URL:
     sys.exit("❌ TOKEN and DATABASE_URL must be set in your .env")
@@ -46,34 +41,13 @@ if DATABASE_URL.startswith("postgres://"):
 elif DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-# ── Telegram webhook cleanup ────────────────────────────────────────────────────
+# ── Remove any existing webhook ────────────────────────────────────────────────
 try:
-    # drop any existing webhook so we can use polling
-    import requests
     requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook?drop_pending_updates=true")
 except:
     pass
 
-# ── Instagram session via Instaloader ───────────────────────────────────────────
-INSTALOADER_SESSION = instaloader.Instaloader(
-    download_pictures=False,
-    download_videos=False,
-    download_video_thumbnails=False,
-    download_comments=False,
-)
-if IG_USERNAME and IG_PASSWORD:
-    try:
-        INSTALOADER_SESSION.load_session_from_file(IG_USERNAME, SESSION_FILE)
-        print("🔒 Loaded IG session from file")
-    except FileNotFoundError:
-        try:
-            INSTALOADER_SESSION.login(IG_USERNAME, IG_PASSWORD)
-            INSTALOADER_SESSION.save_session_to_file(SESSION_FILE)
-            print("✅ Logged in & saved IG session")
-        except Exception as e:
-            print("⚠️ IG login failed:", e)
-
-# ── Database setup ───────────────────────────────────────────────────────────────
+# ── Database setup ─────────────────────────────────────────────────────────────
 engine = create_async_engine(DATABASE_URL, future=True)
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -118,7 +92,7 @@ async def init_db():
             if stmt:
                 await conn.execute(text(stmt))
 
-# ── Helpers ──────────────────────────────────────────────────────────────────────
+# ── Helpers ─────────────────────────────────────────────────────────────────────
 def extract_shortcode(link: str) -> str | None:
     m = re.search(r"instagram\.com/reel/([^/?]+)", link)
     return m.group(1) if m else None
@@ -139,7 +113,12 @@ async def log_to_group(bot, msg: str):
 def debug_entry(fn):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         user = update.effective_user or update.message.from_user
-        name = f"@{user.username}" if user.username else f"{(user.first_name or '')} {(user.last_name or '')}".strip() or str(user.id)
+        name = (
+            f"@{user.username}"
+            if user.username
+            else f"{(user.first_name or '')} {(user.last_name or '')}".strip()
+            or str(user.id)
+        )
         cmd = update.message.text.split()[0] if update.message and update.message.text else "?"
         log_line = f"🛠 {name} ran {cmd} args={context.args}"
         print(log_line)
@@ -148,9 +127,9 @@ def debug_entry(fn):
             return await fn(update, context, *args, **kwargs)
         except Exception as e:
             tb = "".join(traceback.format_exception(None, e, e.__traceback__))
-            err_line = f"❌ Error in {cmd} by {name}:\n<pre>{tb}</pre>"
-            print(err_line)
-            await log_to_group(context.bot, err_line)
+            err = f"❌ Error in {cmd} by {name}:\n<pre>{tb}</pre>"
+            print(err)
+            await log_to_group(context.bot, err)
             await update.message.reply_text("⚠️ Oops—something went wrong.")
     return wrapper
 
@@ -170,9 +149,9 @@ async def fetch_reel_views(shortcode: str) -> int | None:
 async def track_all_views():
     async with AsyncSessionLocal() as session:
         rows = (await session.execute(text("SELECT id, shortcode FROM reels"))).all()
-    for rid, code in rows:
+    for rid, sc in rows:
         try:
-            views = await fetch_reel_views(code)
+            views = await fetch_reel_views(sc)
             if views is not None:
                 ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 async with AsyncSessionLocal() as s2:
@@ -182,7 +161,7 @@ async def track_all_views():
                     )
                     await s2.commit()
         except Exception as e:
-            print(f"⚠️ tracking error for {code}: {e}")
+            print(f"⚠️ tracking error for {sc}: {e}")
         await asyncio.sleep(1)
 
 async def track_loop():
@@ -195,13 +174,13 @@ async def health(request: web.Request) -> web.Response:
     return web.Response(text="OK")
 
 async def start_health():
-    app = web.Application()
-    app.router.add_get("/health", health)
-    runner = web.AppRunner(app)
+    srv = web.Application()
+    srv.router.add_get("/health", health)
+    runner = web.AppRunner(srv)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
 
-# ── User Commands ───────────────────────────────────────────────────────────────
+# ── Command Handlers ────────────────────────────────────────────────────────────
 @debug_entry
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -223,7 +202,7 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not links or len(links) > 5:
         return await update.message.reply_text("❌ Usage: /submit <up to 5 comma-separated Reel URLs>")
     uid, now = update.effective_user.id, datetime.now()
-    # Cooldown
+    # cooldown
     async with AsyncSessionLocal() as s:
         row = (await s.execute(text(
             "SELECT last_submit FROM cooldowns WHERE user_id=:u"
@@ -232,9 +211,10 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             last = datetime.fromisoformat(row[0])
             rem = COOLDOWN_SEC - (now - last).total_seconds()
             if rem > 0:
-                msg = await update.message.reply_text(f"⌛ Try again in {int(rem)}s")
+                m = await update.message.reply_text(f"⌛ Try again in {int(rem)}s")
                 asyncio.create_task(
-                    asyncio.sleep(30) and context.bot.delete_message(update.effective_chat.id, msg.message_id)
+                    asyncio.sleep(30)
+                    and context.bot.delete_message(update.effective_chat.id, m.message_id)
                 )
                 return
         await s.execute(text(
@@ -242,7 +222,7 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "ON CONFLICT(user_id) DO UPDATE SET last_submit=EXCLUDED.last_submit"
         ), {"u": uid, "t": now.isoformat()})
         await s.commit()
-    # Account check
+    # account check
     async with AsyncSessionLocal() as s:
         res = await s.execute(text(
             "SELECT insta_handle FROM user_accounts WHERE user_id=:u"
@@ -255,7 +235,6 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sc = extract_shortcode(link)
         if not sc:
             failures.append((link, "invalid URL")); continue
-        # record initial
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
         async with AsyncSessionLocal() as s:
             await s.execute(text(
@@ -265,7 +244,7 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 await s.execute(text(
                     "INSERT INTO reels(user_id,shortcode,username) VALUES(:u,:c,:h)"
-                ), {"u": uid, "c": sc, "h": allowed[0].lstrip("@")})
+                ), {"u": uid, "c": sc, "h": allowed[0]})
                 await s.execute(text(
                     "INSERT INTO views(reel_id,timestamp,count) VALUES("
                     "(SELECT id FROM reels WHERE user_id=:u AND shortcode=:c),:t,0)"
@@ -437,7 +416,7 @@ async def adminstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             row = (await s.execute(text(
                 "SELECT count FROM views WHERE reel_id=:r ORDER BY timestamp DESC LIMIT 1"
             ),{"r":rid})).fetchone()
-            cnt = row[0] if row else 0; tv += cnt; det.append((sc,cnt))
+            cnt = row[0] if row else 0; tv+=cnt; det.append((sc,cnt))
         det.sort(key=lambda x: x[1], reverse=True)
         data.append((uname or str(uid), len(reels), tv, det))
     data.sort(key=lambda x: x[2], reverse=True)
@@ -448,7 +427,8 @@ async def adminstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append(f"  - https://instagram.com/reel/{sc} → {c}")
         lines.append("")
     fn = "/tmp/admin_stats.txt"
-    with open(fn,"w") as f: f.write("\n".join(lines))
+    with open(fn,"w") as f:
+        f.write("\n".join(lines))
     await update.message.reply_document(open(fn,"rb"), filename="admin_stats.txt")
 
 @debug_entry
@@ -472,8 +452,10 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with AsyncSessionLocal() as s:
         users = (await s.execute(text("SELECT user_id FROM users"))).fetchall()
     for (u,) in users:
-        try: await context.bot.send_message(u, msg)
-        except: pass
+        try:
+            await context.bot.send_message(u, msg)
+        except:
+            pass
     await update.message.reply_text("✅ Broadcast sent.")
 
 @debug_entry
@@ -500,25 +482,24 @@ async def deletereel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await s.commit()
     await update.message.reply_text(f"✅ Reel {code} removed.")
 
-# ── Error Handler ───────────────────────────────────────────────────────────────
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     tb = "".join(traceback.format_exception(None, context.error, context.error.__traceback__))
     await log_to_group(app.bot, f"❗️ Unhandled error:\n<pre>{tb}</pre>")
 
 # ── Main Entrypoint ─────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    asyncio.get_event_loop().run_until_complete(init_db())
-    asyncio.get_event_loop().create_task(start_health())
-    asyncio.get_event_loop().create_task(track_loop())
+async def main():
+    await init_db()
+    asyncio.create_task(start_health())
+    asyncio.create_task(track_loop())
 
     app = ApplicationBuilder().token(TOKEN).build()
 
     # User commands
-    app.add_handler(CommandHandler("start",      start_cmd))
-    app.add_handler(CommandHandler("ping",       ping))
-    app.add_handler(CommandHandler("submit",     submit))
-    app.add_handler(CommandHandler("stats",      stats))
-    app.add_handler(CommandHandler("remove",     remove))
+    app.add_handler(CommandHandler("start",    start_cmd))
+    app.add_handler(CommandHandler("ping",     ping))
+    app.add_handler(CommandHandler("submit",   submit))
+    app.add_handler(CommandHandler("stats",    stats))
+    app.add_handler(CommandHandler("remove",   remove))
 
     # Admin commands
     app.add_handler(CommandHandler("addaccount",    addaccount))
@@ -534,4 +515,7 @@ if __name__ == "__main__":
     app.add_error_handler(error_handler)
 
     print("🤖 Bot running…")
-    app.run_polling(drop_pending_updates=True, close_loop=False)
+    await app.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    asyncio.run(main())
