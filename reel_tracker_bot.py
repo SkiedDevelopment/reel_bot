@@ -138,18 +138,21 @@ async def log_to_group(bot, msg: str):
 # ── Debug decorator (logs every command) ────────────────────────────────────────
 def debug_entry(fn):
     async def wrapper(update, context, *args, **kwargs):
-        uid = update.effective_user.id if update.effective_user else "?"
-        cmd = update.message.text.split()[0] if update.message and update.message.text else "?"
-        log_line = f"🛠 Command {cmd} by {uid} args={context.args}"
-        print(f"→ handling {cmd} from {uid}")
+        user = update.effective_user or update.message.from_user
+        # prefer @username, then “First Last”, then numeric ID
+        name = user.username or f"{user.first_name or ''} {user.last_name or ''}".strip() or user.id
+        cmd  = update.message.text.split()[0] if update.message and update.message.text else "?"
+        log_line = f"🛠 {name} ran {cmd} args={context.args}"
+        print(log_line)
         await log_to_group(context.bot, log_line)
         try:
             return await fn(update, context, *args, **kwargs)
         except Exception as e:
-            tb = "".join(traceback.format_exception(None, e, e.__traceback__))
-            print(f"❌ Exception in {fn.__name__}:\n{tb}")
+            tb="".join(traceback.format_exception(None,e,e.__traceback__))
+            err_line = f"❌ Error in {cmd} by {name}:\n<pre>{tb}</pre>"
+            print(err_line)
+            await log_to_group(context.bot, err_line)
             await update.message.reply_text("⚠️ Oops—something went wrong.")
-            await log_to_group(context.bot, f"Error in {cmd}:\n<pre>{tb}</pre>")
     return wrapper
 
 # ── Background view tracker & health ────────────────────────────────────────────
