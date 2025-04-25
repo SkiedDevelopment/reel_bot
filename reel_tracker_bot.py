@@ -138,17 +138,22 @@ async def log_to_group(bot, msg: str):
 # ── Debug decorator (logs every command) ────────────────────────────────────────
 def debug_entry(fn):
     async def wrapper(update, context, *args, **kwargs):
+        # pick the best display name: @username → “First Last” → ID
         user = update.effective_user or update.message.from_user
-        # prefer @username, then “First Last”, then numeric ID
-        name = user.username or f"{user.first_name or ''} {user.last_name or ''}".strip() or user.id
-        cmd  = update.message.text.split()[0] if update.message and update.message.text else "?"
+        if user.username:
+            name = f"@{user.username}"
+        else:
+            name = f"{(user.first_name or '').strip()} {(user.last_name or '').strip()}".strip() or str(user.id)
+
+        cmd = update.message.text.split()[0] if update.message and update.message.text else "?"
         log_line = f"🛠 {name} ran {cmd} args={context.args}"
         print(log_line)
         await log_to_group(context.bot, log_line)
+
         try:
             return await fn(update, context, *args, **kwargs)
         except Exception as e:
-            tb="".join(traceback.format_exception(None,e,e.__traceback__))
+            tb = "".join(traceback.format_exception(None, e, e.__traceback__))
             err_line = f"❌ Error in {cmd} by {name}:\n<pre>{tb}</pre>"
             print(err_line)
             await log_to_group(context.bot, err_line)
@@ -242,9 +247,11 @@ async def logtest(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @debug_entry
 async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    payload = text[len("/submit"):].strip()
-    links = [l.strip() for l in payload.replace("\n"," ").split(",") if l.strip()]
+    raw_message = update.message.text or ""
+    payload     = raw_message[len("/submit"):].strip()
+    links       = [l.strip() 
+                   for l in payload.replace("\n"," ").split(",") 
+                   if l.strip()]
     if not links:
         return await update.message.reply_text("❌ Usage: /submit <link1>,<link2>,…<link5>")
     if len(links) > 5:
