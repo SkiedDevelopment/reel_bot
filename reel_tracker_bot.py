@@ -230,8 +230,8 @@ async def logtest(update:Update,context:ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Check your log group now.")
 # === Part 2 of 2 ===
 
-+@debug_entry
-+async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@debug_entry
+async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /remove <Reel URL> — stop tracking one of your reels
     """
