@@ -52,11 +52,11 @@ AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=F
 
 # --- Database initializer ---
 async def init_db():
-    ddl = \"\"\"
-    CREATE TABLE IF NOT EXISTS users (
-      user_id BIGINT PRIMARY KEY,
-      username TEXT
-    );
+   ddl = """
+CREATE TABLE IF NOT EXISTS users (
+    user_id BIGINT PRIMARY KEY,
+    username TEXT
+);
     CREATE TABLE IF NOT EXISTS user_accounts (
       user_id BIGINT,
       insta_handle TEXT,
