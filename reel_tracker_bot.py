@@ -85,7 +85,7 @@ CREATE TABLE IF NOT EXISTS users (
       shortcode TEXT,
       timestamp TEXT
     );
-    \"\"\"
+    """
     async with engine.begin() as conn:
         for stmt in ddl.split(";"):
             stmt = stmt.strip()
