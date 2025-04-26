@@ -427,7 +427,7 @@ async def checksession(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return await update.message.reply_text("❌ You are not authorized.")
 
-    await update.message.reply_text("🛡️ Checking Instagram session...")
+    await update.message.reply_text("🛡️ Checking Instagram session (strong mode)...")
 
     try:
         async with async_playwright() as p:
@@ -435,20 +435,21 @@ async def checksession(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context_browser = await browser.new_context()
             await load_cookies(context_browser)
             page = await context_browser.new_page()
-            await page.goto("https://www.instagram.com/", timeout=60000)
+            response = await page.goto("https://www.instagram.com/", timeout=60000)
 
-            if "accounts/login" in page.url:
-                await update.message.reply_text("❌ Session invalid or expired. Please upload new session_cookies.json.")
+            current_url = page.url
+            if "login" in current_url or "/accounts/" in current_url:
+                await update.message.reply_text("❌ Session invalid or expired.")
+            elif response.status >= 400:
+                await update.message.reply_text(f"⚠️ HTTP error: {response.status}")
             else:
                 await update.message.reply_text("✅ Session is active and working fine!")
 
             await browser.close()
+
     except Exception as e:
         print(f"⚠️ checksession error: {e}")
-        await update.message.reply_text("⚠️ Error checking session. Try reuploading cookies.")
-
-
-
+        await update.message.reply_text("⚠️ Unexpected error during session check.")
 
 
 # --- /userstats Command (Admin) ---
