@@ -182,14 +182,19 @@ def is_admin(uid: int) -> bool:
 # --- /start Command ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🚀 Welcome to <b>ReelTracker</b>!\n\n"
-        "<b>Commands you can use:</b>\n"
-        "🎯 /submit <reel links> — Start tracking Reels\n"
-        "📈 /stats — See your tracked Reels and views\n"
-        "🗑 /remove <reel link> — Stop tracking a Reel\n"
-        "⚙️ /ping — Check if bot is alive",
+        "🚀 <b>Welcome to ReelTracker Bot!</b>\n\n"
+        "Here are your available commands:\n\n"
+        "🎯 /submit <links> — Submit up to 5 Instagram Reels for tracking.\n"
+        "📈 /stats — View your total tracked Reels and views.\n"
+        "🗑 /remove <reel link> — Stop tracking a specific Reel.\n"
+        "⚙️ /ping — Check if the bot is alive.\n\n"
+        "ℹ️ Admin Commands:\n"
+        "🔄 /forceupdate — Force update all views manually.\n"
+        "👤 /userstats <user_id> — View a specific user’s stats.\n"
+        "📋 /adminstats — Download full report file.\n",
         parse_mode="HTML"
     )
+
 
 # --- /ping Command ---
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -294,6 +299,57 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"⚠️ /stats error: {e}")
         await update.message.reply_text("❌ Something went wrong. Please try again later.")
 
+# --- /forceupdate Command (Admin only) ---
+async def forceupdate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("❌ You are not authorized.")
+
+    await update.message.reply_text("🔄 Manual update started... please wait!")
+    try:
+        await track_all_views()
+        await update.message.reply_text("✅ Manual update completed successfully!")
+    except Exception as e:
+        print(f"⚠️ /forceupdate error: {e}")
+        await update.message.reply_text("❌ Manual update failed. Check logs.")
+
+# --- /userstats Command (Admin only) ---
+async def userstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("❌ You are not authorized.")
+    
+    if len(context.args) != 1:
+        return await update.message.reply_text("⚠️ Usage: /userstats <telegram_user_id>")
+
+    tgt_id = int(context.args[0])
+    async with AsyncSessionLocal() as s:
+        rows = (await s.execute(text(
+            "SELECT id, shortcode FROM reels WHERE user_id=:u"
+        ), {"u": tgt_id})).fetchall()
+
+    if not rows:
+        return await update.message.reply_text("📭 No reels found for this user.")
+
+    total_views = 0
+    detail = []
+
+    for rid, shortcode in rows:
+        async with AsyncSessionLocal() as s:
+            row = (await s.execute(text(
+                "SELECT count FROM views WHERE reel_id=:r ORDER BY timestamp DESC LIMIT 1"
+            ), {"r": rid})).fetchone()
+        cnt = row[0] if row else 0
+        total_views += cnt
+        detail.append((shortcode, cnt))
+
+    detail.sort(key=lambda x: x[1], reverse=True)
+
+    lines = [f"👤 <b>Stats for user {tgt_id}:</b>", f"🎬 {len(detail)} videos", f"👀 {total_views} total views", "\n<b>Top Reels:</b>"]
+    for idx, (sc, views) in enumerate(detail, 1):
+        lines.append(f"{idx}. https://instagram.com/reel/{sc} — {views} views")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
 # --- /remove Command ---
 async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -367,7 +423,7 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"@{u} — 🎬 {vids} Reels | 👀 {tot} Views")
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
-# --- /adminstats Command (Admin only) ---
+# --- /adminstats Command (improved) ---
 async def adminstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return await update.message.reply_text("❌ You are not authorized.")
@@ -382,21 +438,39 @@ async def adminstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         vids = len(reels)
         views = 0
-        for rid, sc in reels:
+        detail = []
+
+        for rid, shortcode in reels:
             async with AsyncSessionLocal() as s:
                 row = (await s.execute(text(
                     "SELECT count FROM views WHERE reel_id=:r ORDER BY timestamp DESC LIMIT 1"
                 ), {"r": rid})).fetchone()
-            views += row[0] if row else 0
+            v = row[0] if row else 0
+            views += v
+            detail.append((shortcode, v))
 
-        data.append((uname or str(uid), vids, views))
+        detail.sort(key=lambda x: x[1], reverse=True)
+        data.append((uname or str(uid), vids, views, detail))
 
     data.sort(key=lambda x: x[2], reverse=True)
-    lines = []
-    for uname, vids, views in data:
-        lines.append(f"@{uname} — 🎬 {vids} videos — 👀 {views} views")
 
-    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+    lines = []
+    for uname, vids, views, detail in data:
+        lines.append(f"Username: @{uname}")
+        lines.append(f"Accounts Linked: (not shown)")
+        lines.append(f"Total Videos: {vids}")
+        lines.append(f"Total Views: {views}")
+        lines.append("Top Reels:")
+        for sc, cnt in detail:
+            lines.append(f" - https://instagram.com/reel/{sc} — {cnt} views")
+        lines.append("\n")
+
+    # Write to file
+    with open("/tmp/admin_stats.txt", "w") as f:
+        f.write("\n".join(lines))
+
+    await update.message.reply_document(open("/tmp/admin_stats.txt", "rb"), filename="admin_stats.txt")
+
 
 # --- /broadcast Command (Admin only) ---
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -471,6 +545,8 @@ async def main():
     app.add_handler(CommandHandler("adminstats", adminstats))
     app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CommandHandler("auditlog", auditlog))
+    app.add_handler(CommandHandler("forceupdate", forceupdate))
+    app.add_handler(CommandHandler("userstats", userstats))
 
     # Global Error Handler
     app.add_error_handler(error_handler)
