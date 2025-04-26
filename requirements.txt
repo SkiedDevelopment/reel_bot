@@ -5,3 +5,4 @@ asyncpg
 aiohttp
 nest_asyncio
 playwright
+playwright-stealth
