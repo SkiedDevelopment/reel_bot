@@ -380,19 +380,36 @@ async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Something went wrong. Please try again later.")
 
 # --- /uploadsession Command (Admin only) ---
+# --- /uploadsession Start (ask user to upload file) ---
 async def upload_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return await update.message.reply_text("❌ You are not authorized to use this command.")
 
+    await update.message.reply_text("📤 Please upload your Playwright session file (session_cookies.json)")
+    return 1  # next step in ConversationHandler
+
+# --- /uploadsession Receive the file ---
+async def upload_session_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc: Document = update.message.document
     if not doc or not doc.file_name.endswith(".json"):
-        return await update.message.reply_text("⚠️ Please upload a valid Playwright session JSON file.")
+        await update.message.reply_text("⚠️ Please upload a valid .json file.")
+        return ConversationHandler.END
 
     file = await context.bot.get_file(doc.file_id)
     await file.download_to_drive(COOKIE_FILE)
-    await update.message.reply_text("✅ Session file saved. Restarting bot...")
+    await update.message.reply_text("✅ Session file saved successfully. Restarting bot...")
+    os._exit(0)  # This will auto-restart via systemd
 
-    os._exit(0)
+# --- UploadSession Conversation Handler in main() ---
+upload_conv = ConversationHandler(
+    entry_points=[CommandHandler("uploadsession", upload_session)],
+    states={
+        1: [MessageHandler(filters.Document.ALL, upload_session_receive)]
+    },
+    fallbacks=[]
+)
+app.add_handler(upload_conv)
+
 
 # --- /leaderboard Command (Admin only) ---
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
