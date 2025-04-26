@@ -1,5 +1,6 @@
 python-telegram-bot==20.3
 python-dotenv
+python3-setuptools
 SQLAlchemy
 asyncpg
 aiohttp
