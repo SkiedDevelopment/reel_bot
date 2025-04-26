@@ -563,7 +563,13 @@ async def main():
     app.add_handler(CommandHandler("auditlog", auditlog))
     app.add_handler(CommandHandler("forceupdate", forceupdate))
     app.add_handler(CommandHandler("userstats", userstats))
-
+    
+    upload_conv = ConversationHandler(
+        entry_points=[CommandHandler("uploadsession", upload_session)],
+        states={1: [MessageHandler(filters.Document.ALL, upload_session_receive)]},
+        fallbacks=[]
+    )
+    app.add_handler(upload_conv)
     # Global Error Handler
     app.add_error_handler(error_handler)
 
