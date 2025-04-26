@@ -556,20 +556,23 @@ async def main():
     app.add_handler(CommandHandler("remove", remove))
 
     # Admin Commands
-    app.add_handler(CommandHandler("uploadsession", upload_session))
-    app.add_handler(CommandHandler("leaderboard", leaderboard))
-    app.add_handler(CommandHandler("adminstats", adminstats))
-    app.add_handler(CommandHandler("broadcast", broadcast))
-    app.add_handler(CommandHandler("auditlog", auditlog))
     app.add_handler(CommandHandler("forceupdate", forceupdate))
     app.add_handler(CommandHandler("userstats", userstats))
-    
+    app.add_handler(CommandHandler("adminstats", adminstats))
+    app.add_handler(CommandHandler("leaderboard", leaderboard))
+    app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(CommandHandler("auditlog", auditlog))
+
+    # UploadSession Conversation Handler
     upload_conv = ConversationHandler(
         entry_points=[CommandHandler("uploadsession", upload_session)],
-        states={1: [MessageHandler(filters.Document.ALL, upload_session_receive)]},
+        states={
+            1: [MessageHandler(filters.Document.ALL, upload_session_receive)]
+        },
         fallbacks=[]
     )
     app.add_handler(upload_conv)
+
     # Global Error Handler
     app.add_error_handler(error_handler)
 
