@@ -346,12 +346,95 @@ async def upload_session_receive(update: Update, context: ContextTypes.DEFAULT_T
     os._exit(0)
 
 # --- /forceupdate Command (Admin) ---
+# --- /forceupdate Command (with progress update) ---
 async def forceupdate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return await update.message.reply_text("❌ You are not authorized.")
-    await update.message.reply_text("🔄 Manual update started...")
-    await track_all_views()
-    await update.message.reply_text("✅ Manual update complete!")
+
+    message = await update.message.reply_text("🔄 Starting manual update...")
+    success = 0
+    failed = 0
+
+    async with AsyncSessionLocal() as session:
+        rows = (await session.execute(text("SELECT id,shortcode FROM reels"))).all()
+
+    total = len(rows)
+    if total == 0:
+        return await message.edit_text("📭 No reels to update.")
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+        context_browser = await browser.new_context()
+        await load_cookies(context_browser)
+        page = await context_browser.new_page()
+
+        for idx, (rid, sc) in enumerate(rows, 1):
+            try:
+                url = f"https://www.instagram.com/reel/{sc}/"
+                await page.goto(url, timeout=60000)
+                await page.wait_for_selector('video', timeout=10000)
+
+                spans = await page.query_selector_all("span")
+                view_count = None
+                for span in spans:
+                    text_content = await span.inner_text()
+                    if "views" in text_content.lower():
+                        view_count = int(text_content.replace(",", "").replace("views", "").strip())
+                        break
+
+                if view_count is not None:
+                    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    async with AsyncSessionLocal() as session:
+                        await session.execute(text(
+                            "INSERT INTO views(reel_id,timestamp,count) VALUES(:r,:t,:c)"
+                        ), {"r": rid, "t": ts, "c": view_count})
+                        await session.commit()
+                    success += 1
+                else:
+                    failed += 1
+
+            except Exception as e:
+                print(f"⚠️ forceupdate error for {sc}: {e}")
+                failed += 1
+
+            if idx % 10 == 0 or idx == total:
+                try:
+                    await message.edit_text(f"🔄 Updating Reels: {idx}/{total}\n✅ Success: {success}\n❌ Failed: {failed}")
+                except:
+                    pass
+
+            await asyncio.sleep(2)
+
+        await browser.close()
+
+    await message.edit_text(f"✅ Manual update complete!\n🎯 Total: {total}\n✅ Success: {success}\n❌ Failed: {failed}")
+
+
+# --- /checksession Command ---
+async def checksession(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("❌ You are not authorized.")
+
+    await update.message.reply_text("🛡️ Checking Instagram session... please wait.")
+
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+            context_browser = await browser.new_context()
+            await load_cookies(context_browser)
+            page = await context_browser.new_page()
+            await page.goto("https://www.instagram.com/", timeout=60000)
+
+            if "Log in" in await page.content():
+                await update.message.reply_text("❌ Session invalid or expired. Please upload a new session_cookies.json.")
+            else:
+                await update.message.reply_text("✅ Session is active and working fine!")
+            await browser.close()
+    except Exception as e:
+        print(f"⚠️ checksession error: {e}")
+        await update.message.reply_text("⚠️ Error checking session. Try reuploading.")
+
+
 
 # --- /userstats Command (Admin) ---
 async def userstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -537,7 +620,8 @@ async def main():
     app.add_handler(CommandHandler("leaderboard", leaderboard))
     app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CommandHandler("auditlog", auditlog))
-
+    app.add_handler(CommandHandler("checksession", checksession))
+    
     # Upload Session Conversation
     upload_conv = ConversationHandler(
         entry_points=[CommandHandler("uploadsession", upload_session)],
