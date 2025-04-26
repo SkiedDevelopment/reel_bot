@@ -346,12 +346,12 @@ async def upload_session_receive(update: Update, context: ContextTypes.DEFAULT_T
     os._exit(0)
 
 # --- /forceupdate Command (Admin) ---
-# --- /forceupdate Command (with progress update) ---
 async def forceupdate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return await update.message.reply_text("❌ You are not authorized.")
 
-    message = await update.message.reply_text("🔄 Starting manual update...")
+    progress_message = await update.message.reply_text("🔄 Starting manual update...")
+
     success = 0
     failed = 0
 
@@ -360,7 +360,7 @@ async def forceupdate(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     total = len(rows)
     if total == 0:
-        return await message.edit_text("📭 No reels to update.")
+        return await progress_message.edit_text("📭 No reels to update.")
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
@@ -397,17 +397,29 @@ async def forceupdate(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 print(f"⚠️ forceupdate error for {sc}: {e}")
                 failed += 1
 
+            # Every 10 reels OR last reel → Update progress
             if idx % 10 == 0 or idx == total:
                 try:
-                    await message.edit_text(f"🔄 Updating Reels: {idx}/{total}\n✅ Success: {success}\n❌ Failed: {failed}")
-                except:
-                    pass
+                    await progress_message.edit_text(
+                        f"🔄 Updating Reels...\n"
+                        f"✅ Success: {success}\n"
+                        f"❌ Failed: {failed}\n"
+                        f"🎯 Progress: {idx}/{total}"
+                    )
+                except Exception as e:
+                    print(f"⚠️ Failed to edit progress message: {e}")
 
             await asyncio.sleep(2)
 
         await browser.close()
 
-    await message.edit_text(f"✅ Manual update complete!\n🎯 Total: {total}\n✅ Success: {success}\n❌ Failed: {failed}")
+    await progress_message.edit_text(
+        f"✅ Forceupdate Complete!\n"
+        f"🎯 Total Reels: {total}\n"
+        f"✅ Success: {success}\n"
+        f"❌ Failed: {failed}"
+    )
+
 
 
 # --- /checksession Command ---
@@ -415,7 +427,7 @@ async def checksession(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return await update.message.reply_text("❌ You are not authorized.")
 
-    await update.message.reply_text("🛡️ Checking Instagram session... please wait.")
+    await update.message.reply_text("🛡️ Checking Instagram session...")
 
     try:
         async with async_playwright() as p:
@@ -425,14 +437,17 @@ async def checksession(update: Update, context: ContextTypes.DEFAULT_TYPE):
             page = await context_browser.new_page()
             await page.goto("https://www.instagram.com/", timeout=60000)
 
-            if "Log in" in await page.content():
-                await update.message.reply_text("❌ Session invalid or expired. Please upload a new session_cookies.json.")
+            if "accounts/login" in page.url:
+                await update.message.reply_text("❌ Session invalid or expired. Please upload new session_cookies.json.")
             else:
                 await update.message.reply_text("✅ Session is active and working fine!")
+
             await browser.close()
     except Exception as e:
         print(f"⚠️ checksession error: {e}")
-        await update.message.reply_text("⚠️ Error checking session. Try reuploading.")
+        await update.message.reply_text("⚠️ Error checking session. Try reuploading cookies.")
+
+
 
 
 
