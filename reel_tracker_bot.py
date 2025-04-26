@@ -22,8 +22,9 @@ from sqlalchemy import text
 from dotenv import load_dotenv
 import nest_asyncio
 from playwright.async_api import async_playwright
+from playwright_stealth import stealth_async
 
-# --- Load environment variables ---
+# --- Load .env ---
 load_dotenv()
 nest_asyncio.apply()
 
@@ -39,13 +40,10 @@ COOKIE_FILE = "session_cookies.json"
 if not TOKEN or not DATABASE_URL:
     sys.exit("❌ TOKEN and DATABASE_URL must be set in .env")
 
-# Fix DATABASE_URL for SQLAlchemy
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
-elif DATABASE_URL.startswith("postgresql://"):
-    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-# --- Setup Database ---
+# --- Database Setup ---
 engine = create_async_engine(DATABASE_URL, future=True)
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -89,46 +87,39 @@ async def init_db():
             stmt = stmt.strip()
             if stmt:
                 await conn.execute(text(stmt))
-                
-# --- Session Cookies Helper ---
-async def load_cookies_with_device(context):
-    if not os.path.exists(COOKIE_FILE):
-        return
 
-    with open(COOKIE_FILE, "r") as f:
-        cookies = json.load(f)
+# --- Helper Functions ---
 
-    # set storage state (cookies + localStorage)
-    await context.add_cookies(cookies)
+# Load cookies and apply stealth
+async def load_cookies_with_stealth(context):
+    if os.path.exists(COOKIE_FILE):
+        with open(COOKIE_FILE, "r") as f:
+            cookies = json.load(f)
+        await context.add_cookies(cookies)
 
-    # Set viewport, language to match browser
-    await context.add_init_script("""
-    Object.defineProperty(navigator, 'language', {get: () => 'en-US'});
-    Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
-    Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
-    """)
-    
-# --- Shortcode Extractor ---
+# Extract Reel shortcode
 def extract_shortcode(link: str) -> str | None:
     match = re.search(r"reel/([^/?#&]+)", link)
     return match.group(1) if match else None
 
-# --- Admin Checker ---
+# Check if user is admin
 def is_admin(uid: int) -> bool:
     return str(uid) in ADMIN_IDS
 
-# --- Fetch Single Reel Views using Playwright ---
+# Fetch views for a single Reel using Playwright + Stealth
 async def fetch_reel_views(shortcode: str) -> int | None:
-    url = f"https://www.instagram.com/reel/{shortcode}/"
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
             context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                locale="en-US"
             )
-            await load_cookies(context)
             page = await context.new_page()
-            await page.goto(url, timeout=60000)
+            await stealth_async(page)
+            await load_cookies_with_stealth(context)
+
+            await page.goto(f"https://www.instagram.com/reel/{shortcode}/", timeout=60000)
             await page.wait_for_selector('video', timeout=15000)
 
             spans = await page.query_selector_all("span")
@@ -145,7 +136,7 @@ async def fetch_reel_views(shortcode: str) -> int | None:
         print(f"⚠️ fetch_reel_views error for {shortcode}: {e}")
         return None
 
-# --- Track All Views (bulk) ---
+# Track all views
 async def track_all_views():
     async with AsyncSessionLocal() as session:
         rows = (await session.execute(text("SELECT id,shortcode FROM reels"))).all()
@@ -157,15 +148,16 @@ async def track_all_views():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            locale="en-US"
         )
-        await load_cookies(context)
         page = await context.new_page()
+        await stealth_async(page)
+        await load_cookies_with_stealth(context)
 
         for rid, sc in rows:
             try:
-                url = f"https://www.instagram.com/reel/{sc}/"
-                await page.goto(url, timeout=60000)
+                await page.goto(f"https://www.instagram.com/reel/{sc}/", timeout=60000)
                 await page.wait_for_selector('video', timeout=15000)
 
                 spans = await page.query_selector_all("span")
@@ -190,17 +182,19 @@ async def track_all_views():
             await asyncio.sleep(2)
 
         await browser.close()
+
 # --- /start Command ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🚀 <b>Welcome to ReelTracker!</b>\n\n"
-        "Here are your commands:\n\n"
-        "🎯 <b>/submit &lt;reel links&gt;</b> — Track up to 5 reels.\n"
-        "📈 <b>/stats</b> — View your tracking stats.\n"
-        "🗑 <b>/remove &lt;reel URL&gt;</b> — Stop tracking a reel.\n"
-        "🛡️ Admin commands:\n"
-        "🔄 <b>/forceupdate</b> — Refresh views manually.\n"
-        "🧪 <b>/checksession</b> — Check Instagram session health.\n",
+        "🚀 <b>Welcome to ReelTracker Bot!</b>\n\n"
+        "Here are your available commands:\n\n"
+        "🎯 <b>/submit &lt;reel links&gt;</b> — Start tracking reels\n"
+        "📊 <b>/stats</b> — View your current stats\n"
+        "🗑 <b>/remove &lt;reel URL&gt;</b> — Remove a reel from tracking\n"
+        "🔒 Admin Commands:\n"
+        "🔄 /forceupdate — Force update all reels\n"
+        "🛡️ /checksession — Check Instagram login status\n"
+        "📤 /uploadsession — Upload Instagram cookies\n",
         parse_mode="HTML"
     )
 
@@ -215,7 +209,7 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         payload = raw[len("/submit"):].strip()
         links = [l.strip() for l in payload.replace("\n", " ").split(",") if l.strip()]
         if not links or len(links) > 5:
-            return await update.message.reply_text("⚠️ Please submit between 1–5 Reel URLs.")
+            return await update.message.reply_text("⚠️ You can submit up to 5 Reels at once.")
 
         uid = update.effective_user.id
         now = datetime.now()
@@ -229,7 +223,7 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 last = datetime.fromisoformat(row[0])
                 rem = COOLDOWN_SEC - (now - last).total_seconds()
                 if rem > 0:
-                    msg = await update.message.reply_text(f"⌛ Wait {int(rem)}s before submitting again.")
+                    msg = await update.message.reply_text(f"⌛ Cooldown active. Wait {int(rem)}s.")
                     asyncio.create_task(asyncio.sleep(30) and context.bot.delete_message(update.effective_chat.id, msg.message_id))
                     return
 
@@ -260,11 +254,11 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await s.commit()
                     successes += 1
                 except Exception:
-                    failures.append((link, "Already submitted or error"))
+                    failures.append((link, "Already submitted"))
 
-        lines = [f"✅ Submitted {successes} reel(s)!"]
+        lines = [f"✅ Successfully submitted {successes} reel(s)!"]
         if failures:
-            lines.append("❌ Failures:")
+            lines.append("❌ Failed:")
             for l, r in failures:
                 lines.append(f"- {l}: {r}")
         await update.message.reply_text("\n".join(lines))
@@ -296,15 +290,15 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             details.append(cnt)
 
         lines = [
-            "📈 <b>Your Stats:</b>",
-            f"🎬 Total Videos: {len(reels)}",
+            "📊 <b>Your Stats:</b>",
+            f"🎬 Tracked Reels: {len(reels)}",
             f"👀 Total Views: {total_views}"
         ]
         await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
     except Exception as e:
         print(f"⚠️ /stats error: {e}")
-        await update.message.reply_text("❌ Something went wrong. Try again later.")
+        await update.message.reply_text("❌ Something went wrong.")
 
 # --- /remove Command ---
 async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -330,31 +324,64 @@ async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await s.execute(text("DELETE FROM reels WHERE id=:r"), {"r": rid})
             await s.commit()
 
-        await update.message.reply_text(f"🗑 Successfully removed Reel {sc}!")
+        await update.message.reply_text(f"🗑 Removed Reel {sc} successfully!")
 
     except Exception as e:
         print(f"⚠️ /remove error: {e}")
-        await update.message.reply_text("❌ Something went wrong. Try again later.")
-        
-# --- /uploadsession Flow (Admin Only) ---
+        await update.message.reply_text("❌ Something went wrong.")
+
+# --- /uploadsession Command (Admin only) ---
 async def upload_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return await update.message.reply_text("❌ You are not authorized.")
-    await update.message.reply_text("📤 Please upload your session_cookies.json file.")
+
+    await update.message.reply_text("📤 Please send your session_cookies.json file.")
     return 1
 
 async def upload_session_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc: Document = update.message.document
     if not doc or not doc.file_name.endswith(".json"):
-        await update.message.reply_text("⚠️ Please upload a valid JSON file.")
-        return ConversationHandler.END
+        return await update.message.reply_text("⚠️ Invalid file type. Please upload a .json session file.")
 
     file = await context.bot.get_file(doc.file_id)
     await file.download_to_drive(COOKIE_FILE)
-    await update.message.reply_text("✅ Session file saved! Restarting bot...")
+    await update.message.reply_text("✅ Session saved! Restarting bot now...")
     os._exit(0)
 
-# --- /forceupdate Command (with Progress Bar) ---
+# --- /checksession Command (Stealth enabled) ---
+async def checksession(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("❌ You are not authorized.")
+
+    await update.message.reply_text("🛡️ Checking Instagram session...")
+
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+            context_browser = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                locale="en-US"
+            )
+            page = await context_browser.new_page()
+            await stealth_async(page)
+            await load_cookies_with_stealth(context_browser)
+
+            response = await page.goto("https://www.instagram.com/", timeout=60000)
+
+            if "accounts/login" in page.url or "/accounts/" in page.url:
+                await update.message.reply_text("❌ Session invalid. Please upload a new session.")
+            elif response.status >= 400:
+                await update.message.reply_text(f"⚠️ HTTP error detected: {response.status}")
+            else:
+                await update.message.reply_text("✅ Session is active and valid!")
+
+            await browser.close()
+
+    except Exception as e:
+        print(f"⚠️ /checksession error: {e}")
+        await update.message.reply_text("⚠️ Error checking session.")
+
+# --- /forceupdate Command (with live progress bar) ---
 async def forceupdate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return await update.message.reply_text("❌ You are not authorized.")
@@ -374,10 +401,12 @@ async def forceupdate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
         context_browser = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            locale="en-US"
         )
-        await load_cookies(context_browser)
         page = await context_browser.new_page()
+        await stealth_async(page)
+        await load_cookies_with_stealth(context_browser)
 
         for idx, (rid, sc) in enumerate(rows, 1):
             try:
@@ -411,13 +440,13 @@ async def forceupdate(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if idx % 10 == 0 or idx == total:
                 try:
                     await progress_message.edit_text(
-                        f"🔄 Updating Reels...\n"
+                        f"🔄 Updating...\n"
                         f"✅ Success: {success}\n"
                         f"❌ Failed: {failed}\n"
                         f"🎯 Progress: {idx}/{total}"
                     )
                 except Exception as e:
-                    print(f"⚠️ Failed to edit progress message: {e}")
+                    print(f"⚠️ Progress edit error: {e}")
 
             await asyncio.sleep(2)
 
@@ -425,51 +454,13 @@ async def forceupdate(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await progress_message.edit_text(
         f"✅ Forceupdate Complete!\n"
-        f"🎯 Total: {total}\n"
+        f"🎯 Total Reels: {total}\n"
         f"✅ Success: {success}\n"
         f"❌ Failed: {failed}"
     )
-
-# --- /checksession Command (Real User-Agent + Cookie check) ---
-async def checksession(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return await update.message.reply_text("❌ You are not authorized.")
-
-    await update.message.reply_text("🛡️ Checking Instagram session... Please wait...")
-
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"]
-            )
-            context_browser = await browser.new_context(
-                viewport={"width": 1280, "height": 720},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                locale="en-US"
-            )
-
-            await load_cookies_with_device(context_browser)
-
-            page = await context_browser.new_page()
-            response = await page.goto("https://www.instagram.com/", timeout=60000)
-
-            if "accounts/login" in page.url or "/accounts/" in page.url:
-                await update.message.reply_text("❌ Session invalid. Please upload a fresh session file.")
-            elif response.status >= 400:
-                await update.message.reply_text(f"⚠️ HTTP error detected: {response.status}")
-            else:
-                await update.message.reply_text("✅ Session is active and working fine!")
-
-            await browser.close()
-
-    except Exception as e:
-        print(f"⚠️ /checksession error: {e}")
-        await update.message.reply_text("⚠️ Error checking session. Try reuploading cookies.")
-        
-# --- Health Check Server ---
+# --- Health Check (for systemd uptime monitoring) ---
 async def health(request: web.Request) -> web.Response:
-    return web.Response(text="✅ OK - ReelTracker is running.")
+    return web.Response(text="✅ OK - ReelTracker is alive.")
 
 async def start_health_server():
     app = web.Application()
@@ -502,7 +493,7 @@ async def main():
     app.add_handler(CommandHandler("forceupdate", forceupdate))
     app.add_handler(CommandHandler("checksession", checksession))
 
-    # Upload session conversation
+    # Upload session flow
     upload_conv = ConversationHandler(
         entry_points=[CommandHandler("uploadsession", upload_session)],
         states={1: [MessageHandler(filters.Document.ALL, upload_session_receive)]},
@@ -510,14 +501,12 @@ async def main():
     )
     app.add_handler(upload_conv)
 
-    # Error handler
     app.add_error_handler(error_handler)
 
-    print("🤖 Bot is running...")
+    print("🤖 ReelTracker Bot is running...")
     await app.run_polling(drop_pending_updates=True)
 
 # --- Entrypoint ---
 if __name__ == "__main__":
     nest_asyncio.apply()
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(main())
+    asyncio.run(main())
