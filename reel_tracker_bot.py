@@ -89,13 +89,25 @@ async def init_db():
             stmt = stmt.strip()
             if stmt:
                 await conn.execute(text(stmt))
+                
 # --- Session Cookies Helper ---
-async def load_cookies(context):
-    if os.path.exists(COOKIE_FILE):
-        with open(COOKIE_FILE, "r") as f:
-            cookies = json.load(f)
-        await context.add_cookies(cookies)
+async def load_cookies_with_device(context):
+    if not os.path.exists(COOKIE_FILE):
+        return
 
+    with open(COOKIE_FILE, "r") as f:
+        cookies = json.load(f)
+
+    # set storage state (cookies + localStorage)
+    await context.add_cookies(cookies)
+
+    # Set viewport, language to match browser
+    await context.add_init_script("""
+    Object.defineProperty(navigator, 'language', {get: () => 'en-US'});
+    Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+    Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
+    """)
+    
 # --- Shortcode Extractor ---
 def extract_shortcode(link: str) -> str | None:
     match = re.search(r"reel/([^/?#&]+)", link)
@@ -323,6 +335,7 @@ async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         print(f"⚠️ /remove error: {e}")
         await update.message.reply_text("❌ Something went wrong. Try again later.")
+        
 # --- /uploadsession Flow (Admin Only) ---
 async def upload_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
@@ -426,16 +439,22 @@ async def checksession(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
-            context_browser = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"]
             )
-            await load_cookies(context_browser)
+            context_browser = await browser.new_context(
+                viewport={"width": 1280, "height": 720},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                locale="en-US"
+            )
+
+            await load_cookies_with_device(context_browser)
+
             page = await context_browser.new_page()
             response = await page.goto("https://www.instagram.com/", timeout=60000)
 
-            current_url = page.url
-            if "accounts/login" in current_url or "/accounts/" in current_url:
+            if "accounts/login" in page.url or "/accounts/" in page.url:
                 await update.message.reply_text("❌ Session invalid. Please upload a fresh session file.")
             elif response.status >= 400:
                 await update.message.reply_text(f"⚠️ HTTP error detected: {response.status}")
@@ -447,6 +466,7 @@ async def checksession(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         print(f"⚠️ /checksession error: {e}")
         await update.message.reply_text("⚠️ Error checking session. Try reuploading cookies.")
+        
 # --- Health Check Server ---
 async def health(request: web.Request) -> web.Response:
     return web.Response(text="✅ OK - ReelTracker is running.")
