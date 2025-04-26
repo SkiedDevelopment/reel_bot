@@ -182,19 +182,18 @@ def is_admin(uid: int) -> bool:
 # --- /start Command ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🚀 <b>Welcome to ReelTracker Bot!</b>\n\n"
-        "Here are your available commands:\n\n"
-        "🎯 /submit <links> — Submit up to 5 Instagram Reels for tracking.\n"
-        "📈 /stats — View your total tracked Reels and views.\n"
-        "🗑 /remove <reel link> — Stop tracking a specific Reel.\n"
-        "⚙️ /ping — Check if the bot is alive.\n\n"
-        "ℹ️ Admin Commands:\n"
-        "🔄 /forceupdate — Force update all views manually.\n"
-        "👤 /userstats <user_id> — View a specific user’s stats.\n"
-        "📋 /adminstats — Download full report file.\n",
+        "🚀 <b>Welcome to ReelTracker!</b>\n\n"
+        "<b>Here are your available commands:</b>\n\n"
+        "🎯 <b>/submit &lt;links&gt;</b> — Submit up to 5 Instagram Reels for tracking.\n"
+        "📈 <b>/stats</b> — View your tracked Reels and total views.\n"
+        "🗑 <b>/remove &lt;reel link&gt;</b> — Remove a specific Reel from tracking.\n"
+        "⚙️ <b>/ping</b> — Check if the bot is alive.\n\n"
+        "🔒 <b>Admin Commands:</b>\n"
+        "🔄 <b>/forceupdate</b> — Manually refresh all Reel views now.\n"
+        "👤 <b>/userstats &lt;user_id&gt;</b> — View a specific user's stats.\n"
+        "📋 <b>/adminstats</b> — Download full system stats.\n",
         parse_mode="HTML"
     )
-
 
 # --- /ping Command ---
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
