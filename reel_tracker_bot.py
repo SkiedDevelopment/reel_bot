@@ -133,6 +133,7 @@ async def fetch_reel_views(shortcode: str) -> int | None:
 async def track_all_views():
     async with AsyncSessionLocal() as session:
         rows = (await session.execute(text("SELECT id,shortcode FROM reels"))).all()
+
     if not rows:
         print("No reels to track.")
         return
@@ -148,10 +149,11 @@ async def track_all_views():
                 url = f"https://www.instagram.com/reel/{sc}/"
                 await page.goto(url, timeout=60000)
                 await page.wait_for_selector('video', timeout=10000)
-                element = await page.query_selector('xpath=//*[contains(text(),"views")]')
+
+                element = await page.query_selector('xpath=//*[contains(text(),'views')]')
                 if element:
-                    text = await element.inner_text()
-                    views = int(text.replace(",", "").replace("views", "").strip())
+                    view_text = await element.inner_text()
+                    views = int(view_text.replace(",", "").replace("views", "").strip())
 
                     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     async with AsyncSessionLocal() as session:
@@ -159,6 +161,7 @@ async def track_all_views():
                             "INSERT INTO views(reel_id,timestamp,count) VALUES(:r,:t,:c)"
                         ), {"r": rid, "t": ts, "c": views})
                         await session.commit()
+
             except Exception as e:
                 print(f"Error tracking {sc}: {e}")
             await asyncio.sleep(2)
