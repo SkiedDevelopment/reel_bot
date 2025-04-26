@@ -150,7 +150,7 @@ async def track_all_views():
                 await page.goto(url, timeout=60000)
                 await page.wait_for_selector('video', timeout=10000)
 
-                element = await page.query_selector('xpath=//*[contains(text(),'views')]')
+                element = await page.query_selector("xpath=//*[contains(text(),'views')]")
                 if element:
                     view_text = await element.inner_text()
                     views = int(view_text.replace(",", "").replace("views", "").strip())
