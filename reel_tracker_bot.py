@@ -588,13 +588,6 @@ async def main():
     app.add_handler(CommandHandler("deleteuser", deleteuser))
     app.add_handler(CommandHandler("deletereel", deletereel))
 
-    # --- UPLOAD SESSION COMMAND ---
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("uploadsession", upload_session_start)],
-        states={1: [MessageHandler(filters.Document.ALL, upload_session)]},
-        fallbacks=[CommandHandler("cancel", upload_session_cancel)]
-    )
-    app.add_handler(conv_handler)
 
     app.add_error_handler(error_handler)
 
