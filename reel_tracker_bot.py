@@ -287,16 +287,20 @@ async def main():
         """))
     asyncio.create_task(start_health())
 
+   if __name__ == "__main__":
+    import asyncio
+    asyncio.run(start_health())  # Start health check server
+
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # User commands
+    # User handlers
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("submit", submit))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("remove", remove))
     app.add_handler(CommandHandler("checkapi", checkapi))
 
-    # Admin commands
+    # Admin handlers
     app.add_handler(CommandHandler("forceupdate", forceupdate))
     app.add_handler(CommandHandler("leaderboard", leaderboard))
     app.add_handler(CommandHandler("userstatsid", userstatsid))
@@ -307,19 +311,8 @@ async def main():
     app.add_handler(CommandHandler("auditlog", auditlog))
 
     print("🤖 Bot running...")
-    await app.run_polling(drop_pending_updates=True)
+    app.run_polling(drop_pending_updates=True)
 
-if __name__ == "__main__":
-    import asyncio
-
-    try:
-        asyncio.run(main())
-    except RuntimeError as e:
-        if "already running" in str(e):
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(main())
-        else:
             raise
 
 
