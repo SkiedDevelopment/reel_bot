@@ -185,6 +185,20 @@ async def addreel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text("✅ Reel successfully added for tracking!")
 
+# / myreels
+@debug_handler
+async def myreels(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the user's added reels."""
+    user_id = update.effective_user.id
+    async with async_session() as session:
+        result = await session.execute(text("SELECT shortcode FROM reels WHERE user_id = :uid"), {"uid": user_id})
+        reels = result.scalars().all()
+    if reels:
+        msg = "\n".join(f"https://www.instagram.com/reel/{r}/" for r in reels)
+        await update.message.reply_text(f"🎥 **Your Reels:**\n\n{msg}", parse_mode=ParseMode.MARKDOWN)
+    else:
+        await update.message.reply_text("😔 You have no reels added yet.")
+
 # /mystats
 @debug_handler
 async def mystats(update: Update, context: ContextTypes.DEFAULT_TYPE):
