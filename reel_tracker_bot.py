@@ -199,6 +199,19 @@ async def myreels(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("😔 You have no reels added yet.")
 
+# /checkapi
+@debug_handler
+async def check_scraper_api(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Check if ScrapingBee API is working."""
+    try:
+        resp = await fetch_reel_page("https://www.instagram.com")
+        if resp and resp.status_code == 200:
+            await update.message.reply_text("✅ Scraper API is working properly!")
+        else:
+            await update.message.reply_text("⚠️ Scraper API might have issues or limits!")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Scraper API Error: {e}")
+
 # /mystats
 @debug_handler
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
