@@ -23,8 +23,8 @@ TOKEN = os.getenv("TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_IDS = list(map(int, os.getenv("ADMIN_ID", "").split(",")))
 ZYTE_API_KEY = os.getenv("ZYTE_API_KEY")  # Zyte API key
-PORT = int(os.getenv("PORT", 8000))
-COOLDOWN_SEC = int(os.getenv("COOLDOWN_SEC", 60))
+PORT = int(os.getenv("PORT", "8000"))
+COOLDOWN_SEC = int(os.getenv("COOLDOWN_SEC", "60"))
 
 if not all([TOKEN, DATABASE_URL, ZYTE_API_KEY]):
     print("❌ Must set TOKEN, DATABASE_URL, and ZYTE_API_KEY in .env")
@@ -68,9 +68,9 @@ async_session = sessionmaker(engine, expire_on_commit=False, class_=AsyncSession
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        await conn.execute(text(
-            "ALTER TABLE reels ADD COLUMN IF NOT EXISTS last_views BIGINT DEFAULT 0"
-        ))
+        await conn.execute(
+            text("ALTER TABLE reels ADD COLUMN IF NOT EXISTS last_views BIGINT DEFAULT 0")
+        )
 
 class Reel(Base):
     __tablename__ = 'reels'
@@ -95,11 +95,7 @@ def scrape_instagram_reel_views(shortcode: str) -> int:
         url = f"https://www.instagram.com/reel/{shortcode}/"
         response = httpx.get(
             "https://api.zyte.com/v1/extract",
-            params={
-                "apikey": ZYTE_API_KEY,
-                "url": url,
-                "render_js": "true"
-            },
+            params={"apikey": ZYTE_API_KEY, "url": url, "render_js": "true"},
             timeout=30
         )
         response.raise_for_status()
@@ -121,11 +117,7 @@ async def fetch_reel_page(url: str) -> dict:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.get(
                 "https://api.zyte.com/v1/extract",
-                params={
-                    "apikey": ZYTE_API_KEY,
-                    "url": url,
-                    "render_js": "true"
-                }
+                params={"apikey": ZYTE_API_KEY, "url": url, "render_js": "true"}
             )
             resp.raise_for_status()
             return {"status_code": resp.status_code, "content": resp.text}
@@ -144,7 +136,7 @@ def can_use_command(user_id: int) -> bool:
         return True
     return False
 
-# Handlers
+# Command handlers
 @debug_handler
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
@@ -218,12 +210,12 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with async_session() as session:
         rows = await session.execute(
-            text("SELECT user_id, SUM(last_views) FROM reels GROUP BY user_id ORDER BY SUM DESC")
+            text("SELECT user_id, SUM(last_views) as total_views FROM reels GROUP BY user_id ORDER BY total_views DESC")
         )
         data = rows.all()
     if not data:
         return await update.message.reply_text("🏁 No data.")
-    lines = [f"{i+1}. {uid}: {v} views" for i,(uid,v) in enumerate(data)]
+    lines = [f"{i+1}. {uid}: {v} views" for i, (uid, v) in enumerate(data)]
     await update.message.reply_text("\n".join(lines))
 
 @debug_handler
@@ -233,79 +225,105 @@ async def forceupdate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text(f"⏳ Wait {COOLDOWN_SEC}s")
     msg = await update.message.reply_text("🔄 Updating...")
     async with async_session() as session:
-        rows = await session.execute(text("SELECT id, shortcode FROM reels WHERE user_id = :u"), {"u": uid})
-        if not rows:
+        rows = await session.execute(
+            text("SELECT id, shortcode FROM reels WHERE user_id = :u"), {"u": uid}
+        )
+        reels = rows.all()
+        if not reels:
             return await msg.edit_text("❗ No reels.")
-        updated=0
-        for rid,sc in rows:
+        updated = 0
+        for rid, sc in reels:
             views = scrape_instagram_reel_views(sc)
-            if views>=0:
-                await session.execute(text("UPDATE reels SET last_views=:v WHERE id=:i"), {"v":views,"i":rid})
-                updated+=1
+            if views >= 0:
+                await session.execute(
+                    text("UPDATE reels SET last_views = :v WHERE id = :i"), {"v": views, "i": rid}
+                )
+                updated += 1
             await asyncio.sleep(1)
         await session.commit()
     await msg.edit_text(f"✅ Updated {updated} reels")
 
 @debug_handler
 async def userstatsid(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return await update.message	reply_text("🚫Unauthorized")
-    if not context.args: return await update.message.reply_text("❗Usage: /userstatsid <id>")
-    tid=context.args[0]
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("🚫 Unauthorized")
+    if not context.args:
+        return await update.message.reply_text("❗ Usage: /userstatsid <user_id>")
+    tid = context.args[0]
     async with async_session() as session:
-        rows=session.execute(text("SELECT shortcode,last_views FROM reels WHERE user_id=:u"),{"u":tid})
-        data=rows.all()
-    if not data: return await update.message.reply_text("❗No data.")
-    lines=[f"https://www.instagram.com/reel/{s}/ → {v}" for s,v in data]
-    await update.message.reply_text("📄Stats for {tid}:\n"+"\n".join(lines))
+        rows = await session.execute(
+            text("SELECT shortcode, last_views FROM reels WHERE user_id = :u"), {"u": tid}
+        )
+        data = rows.all()
+    if not data:
+        return await update.message.reply_text("❗ No data.")
+    lines = [f"https://www.instagram.com/reel/{s}/ → {v} views" for s, v in data]
+    await update.message.reply_text(f"📄 Stats for user {tid}:\n" + "\n".join(lines))
 
 @debug_handler
-async def auditlog(update: Update, context: ContextTypes.DEFAULTTYPE):
-    if not is_admin(update.effective_user.id): return await update.message.reply_text("🚫Unauthorized")
-    report=[]
+async def auditlog(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("🚫 Unauthorized")
+    report = []
     async with async_session() as session:
-        users=session.execute(text("SELECT DISTINCT user_id FROM reels")).scalars().all()
+        users = await session.execute(text("SELECT DISTINCT user_id FROM reels"))
+        users = users.scalars().all()
         for u in users:
-            rec=session.execute(text("SELECT shortcode,last_views FROM reels WHERE user_id=:u"),{"u":u}).all()
-            total=sum(v for _,v in rec)
-            report.append(f"User {u}: {len(rec)} reels, {total} views")
-            for s,v in rec: report.append(f"  https://www.instagram.com/reel/{s}/ → {v}")
+            recs = await session.execute(
+                text("SELECT shortcode, last_views FROM reels WHERE user_id = :u"), {"u": u}
+            )
+            recs = recs.all()
+            total = sum(v for _, v in recs)
+            report.append(f"User {u}: {len(recs)} reels, {total} views")
+            for s, v in recs:
+                report.append(f"  https://www.instagram.com/reel/{s}/ → {v} views")
             report.append("")
-    fn=f"audit_log_{int(datetime.utcnow().timestamp())}.txt"
-    with open(fn,"w") as f: f.write("\n".join(report))
-    await update.message.reply_document(open(fn,"rb"))
-    os.remove(fn)
+    filename = f"audit_log_{int(datetime.utcnow().timestamp())}.txt"
+    with open(filename, "w") as f:
+        f.write("\n".join(report))
+    await update.message.reply_document(open(filename, "rb"))
+    os.remove(filename)
 
 @debug_handler
 async def deleteuser(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return await update.message.reply_text("🚫Unauthorized")
-    if not context.args: return await update.message.reply_text("❗Usage: /deleteuser <id>")
-    uid=context.args[0]
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("🚫 Unauthorized")
+    if not context.args:
+        return await update.message.reply_text("❗ Usage: /deleteuser <user_id>")
+    uid = context.args[0]
     async with async_session() as session:
-        await session.execute(text("DELETE FROM reels WHERE user_id=:u"),{"u":uid})
+        await session.execute(text("DELETE FROM reels WHERE user_id = :u"), {"u": uid})
         await session.commit()
-    await update.message.reply_text(f"✅Removed reels for user {uid}")
+    await update.message.reply_text(f"✅ Removed reels for user {uid}")
 
 @debug_handler
 async def deletereel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return await update.message.reply_text("🚫Unauthorized")
-    if not context.args: return await update.message.reply_text("❗Usage: /deletereel <code>")
-    sc=context.args[0]
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("🚫 Unauthorized")
+    if not context.args:
+        return await update.message.reply_text("❗ Usage: /deletereel <shortcode>")
+    sc = context.args[0]
     async with async_session() as session:
-        await session.execute(text("DELETE FROM reels WHERE shortcode=:s"),{"s":sc})
+        await session.execute(text("DELETE FROM reels WHERE shortcode = :s"), {"s": sc})
         await session.commit()
-    await update.message.reply_text(f"✅Deleted reel {sc}")
+    await update.message.reply_text(f"✅ Deleted reel {sc}")
 
 @debug_handler
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return await update.message.reply_text("🚫Unauthorized")
-    if not context.args: return await update.message.reply_text("❗Usage: /broadcast <msg>")
-    msg=" ".join(context.args)
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("🚫 Unauthorized")
+    if not context.args:
+        return await update.message.reply_text("❗ Usage: /broadcast <message>")
+    message = " ".join(context.args)
     async with async_session() as session:
-        users=session.execute(text("SELECT DISTINCT user_id FROM reels")).scalars().all()
+        users = await session.execute(text("SELECT DISTINCT user_id FROM reels"))
+        users = users.scalars().all()
     for u in users:
-        try: await update.message.bot.send_message(chat_id=u,text=msg)
-        except: continue
-    await update.message.reply_text("✅Broadcast sent")
+        try:
+            await update.message.bot.send_message(chat_id=u, text=message)
+        except Exception:
+            continue
+    await update.message.reply_text("✅ Broadcast sent")
 
 # Bot setup
 app = Application.builder().token(TOKEN).build()
@@ -323,7 +341,7 @@ handlers = [
     ("deletereel", deletereel),
     ("broadcast", broadcast)
 ]
-for cmd,func in handlers:
+for cmd, func in handlers:
     app.add_handler(CommandHandler(cmd, func))
 
 async def main():
