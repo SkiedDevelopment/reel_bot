@@ -118,7 +118,8 @@ async def fetch_page(url: str) -> dict:
         r.raise_for_status()
         return {"status": r.status_code, "content": r.text}
 
-# Cooldown
+# Track cooldowns
+user_cd = {}
 def can_use(uid: int) -> bool:
     now = datetime.utcnow()
     last = user_cd.get(uid)
@@ -143,6 +144,51 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔄 /forceupdate - Admin: Refresh all reels"
     )
     await update.message.reply_text(cmds, parse_mode=ParseMode.MARKDOWN)
+
+@debug_handler
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    async with async_session() as s:
+        res_tot = await s.execute(text(
+            "SELECT COALESCE(SUM(last_views),0), COUNT(*), COUNT(DISTINCT owner) "
+            "FROM reels WHERE user_id = :u"
+        ), {"u": uid})
+        tot = res_tot.fetchone() or (0, 0, 0)
+        res_top = await s.execute(text(
+            "SELECT shortcode, last_views FROM reels WHERE user_id = :u "
+            "ORDER BY last_views DESC LIMIT 10"
+        ), {"u": uid})
+        top_list = res_top.fetchall()
+    lines = [
+        "📊 *Your Stats* 📊",
+        f"• Total Views: *{tot[0]}*",
+        f"• Total Videos: *{tot[1]}*",
+        f"• Total Accounts: *{tot[2]}*",
+        ""
+    ]
+    for code, views in top_list:
+        lines.append(f"• https://www.instagram.com/reel/{code}/ - *{views}* views")
+    msg = "\n".join(lines)
+    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
+@debug_handler
+async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("🚫 *Unauthorized!*", parse_mode=ParseMode.MARKDOWN)
+    async with async_session() as s:
+        res = await s.execute(text(
+            "SELECT u.username, COUNT(r.id) AS vids, COALESCE(SUM(r.last_views),0) AS views "
+            "FROM users u "
+            "LEFT JOIN reels r ON r.user_id = u.id "
+            "GROUP BY u.username ORDER BY views DESC"
+        ))
+        data = res.fetchall()
+    if not data:
+        return await update.message.reply_text("🏁 No data available.")
+    msg = ["🏆 *Global Leaderboard* 🏆", ""]
+    for name, vids, views in data:
+        msg.append(f"• {name} - {vids} vids - {views} views")
+    await update.message.reply_text("\n".join(msg), parse_mode=ParseMode.MARKDOWN)
 
 @debug_handler
 async def addaccount(update: Update, context: ContextTypes.DEFAULT_TYPE):
