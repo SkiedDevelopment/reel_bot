@@ -35,7 +35,7 @@ tb_api = FastAPI()
 
 @tb_api.get("/")
 async def health():
-    return {"status": "OK"}
+    return {"status": "🟢 OK"}
 
 async def run_health():
     config = uvicorn.Config(tb_api, host="0.0.0.0", port=PORT, log_level="info")
@@ -56,15 +56,10 @@ async_session = sessionmaker(engine, expire_on_commit=False, class_=AsyncSession
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        await conn.execute(text(
-            "ALTER TABLE reels ADD COLUMN IF NOT EXISTS last_views BIGINT DEFAULT 0;"
-        ))
-        await conn.execute(text(
-            "ALTER TABLE reels ADD COLUMN IF NOT EXISTS owner VARCHAR;"
-        ))
-        await conn.execute(text(
-            "ALTER TABLE allowed_accounts ADD COLUMN IF NOT EXISTS insta_handle VARCHAR;"
-        ))
+        # Migrations
+        await conn.execute(text("ALTER TABLE reels ADD COLUMN IF NOT EXISTS last_views BIGINT DEFAULT 0;"))
+        await conn.execute(text("ALTER TABLE reels ADD COLUMN IF NOT EXISTS owner VARCHAR;"))
+        await conn.execute(text("ALTER TABLE allowed_accounts ADD COLUMN IF NOT EXISTS insta_handle VARCHAR;"))
 
 class Reel(Base):
     __tablename__ = 'reels'
@@ -111,7 +106,7 @@ def scrape_views(shortcode: str) -> int:
     for s in soup.find_all("script"):
         if s.string and '"video_view_count"' in s.string:
             txt = s.string
-            start = txt.find('"video_view_count":') + 19
+            start = txt.find('"video_view_count":') + len('"video_view_count":')
             end = txt.find(',', start)
             return int(txt[start:end])
     return -1
@@ -139,140 +134,182 @@ def can_use(uid: int) -> bool:
 @debug_handler
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cmds = (
-        "👋 *Reel Tracker*\n"
-        "/addaccount <uid> <@insta> - Admin\n"
-        "/removeaccount <uid> - Admin\n"
-        "/addreel <link> - Add reel\n"
-        "/removereel <code> - Remove reel\n"
-        "/myreels - List reels\n"
-        "/stats - My stats\n"
-        "/leaderboard - Admin leaderboard\n"
-        "/checkapi - Admin API test\n"
-        "/forceupdate - Admin update"
+        "🤖 *Reel Tracker Bot* 🤖\n\n"
+        "🔒 /addaccount <uid> <@insta> - Admin: Allow a user’s IG handle\n"
+        "🔓 /removeaccount <uid> - Admin: Revoke a user’s IG handle\n"
+        "➕ /addreel <link> - Add a reel to track\n"
+        "➖ /removereel <code> - Remove a tracked reel\n"
+        "📋 /myreels - List your reels\n"
+        "📊 /stats - Your stats\n"
+        "🏆 /leaderboard - Admin: Global leaderboard\n"
+        "🔧 /checkapi - Admin: Zyte API test\n"
+        "🔄 /forceupdate - Admin: Refresh all reels"
     )
     await update.message.reply_text(cmds, parse_mode=ParseMode.MARKDOWN)
 
 @debug_handler
 async def addaccount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        return await update.message.reply_text("🚫 Unauthorized.")
+        return await update.message.reply_text("🚫 *Unauthorized!*", parse_mode=ParseMode.MARKDOWN)
     if len(context.args) != 2:
-        return await update.message.reply_text("Usage: /addaccount <uid> <@handle>")
-    uid = int(context.args[0]); handle = context.args[1].lstrip('@')
+        return await update.message.reply_text("❗ Usage: /addaccount <uid> <@handle>")
+    uid = int(context.args[0])
+    handle = context.args[1].lstrip('@')
     async with async_session() as s:
         obj = await s.get(AllowedAccount, uid)
-        if obj: obj.insta_handle = handle
-        else: s.add(AllowedAccount(user_id=uid, insta_handle=handle))
+        if obj:
+            obj.insta_handle = handle
+            resp = f"🔄 Updated allowed handle to @{handle} for user {uid}!"
+        else:
+            s.add(AllowedAccount(user_id=uid, insta_handle=handle))
+            resp = f"✅ @{handle} is now allowed for user {uid}!"
         await s.commit()
-    await update.message.reply_text(f"✅ @{handle} allowed for {uid}")
+    await update.message.reply_text(resp)
 
 @debug_handler
 async def removeaccount(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return await update.message.reply_text("🚫 Unauthorized.")
-    if len(context.args)!=1: return await update.message.reply_text("Usage: /removeaccount <uid>")
-    uid=int(context.args[0])
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("🚫 *Unauthorized!*", parse_mode=ParseMode.MARKDOWN)
+    if len(context.args) != 1:
+        return await update.message.reply_text("❗ Usage: /removeaccount <uid>")
+    uid = int(context.args[0])
     async with async_session() as s:
-        acc=await s.get(AllowedAccount,uid)
-        if not acc: return await update.message.reply_text("❗ No mapping.")
-        await s.delete(acc); await s.commit()
-    await update.message.reply_text(f"✅ Removed account for {uid}")
+        acc = await s.get(AllowedAccount, uid)
+        if not acc:
+            return await update.message.reply_text("⚠️ No account mapping found.")
+        await s.delete(acc)
+        await s.commit()
+    await update.message.reply_text(f"🗑️ Removed allowed account for user {uid}.")
 
 @debug_handler
 async def addreel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args: return await update.message.reply_text("Usage: /addreel <URL>")
-    uid=update.effective_user.id
+    if not context.args:
+        return await update.message.reply_text("❗ Usage: /addreel <Instagram reel URL>")
+    uid = update.effective_user.id
     async with async_session() as s:
-        mapping=await s.get(AllowedAccount,uid)
-    if not mapping: return await update.message.reply_text("❌ Ask admin: /addaccount")
-    link=context.args[0]; m=re.search(r"/reel/([^/?]+)/?",link)
-    if not m: return await update.message.reply_text("❌ Invalid URL")
-    code=m.group(1)
-    page=await fetch_page(f"https://www.instagram.com/reel/{code}/")
-    owner=re.search(r'"username":"([^"]+)"',page['content'])
-    if not owner or owner.group(1).lower()!=mapping.insta_handle.lower():
-        return await update.message.reply_text(f"❌ Only @{mapping.insta_handle}")
+        mapping = await s.get(AllowedAccount, uid)
+    if not mapping:
+        return await update.message.reply_text("❌ You have no allowed Instagram handle. Ask an admin with /addaccount.")
+    link = context.args[0]
+    m = re.search(r"/reel/([^/?]+)/?", link)
+    if not m:
+        return await update.message.reply_text("❌ Invalid URL. Please send a valid Instagram reel link.")
+    code = m.group(1)
+    page = await fetch_page(f"https://www.instagram.com/reel/{code}/")
+    owner = re.search(r'"username":"([^"]+)"', page['content'])
+    if not owner or owner.group(1).lower() != mapping.insta_handle.lower():
+        return await update.message.reply_text(f"❌ You can only add reels from @{mapping.insta_handle}.")
     async with async_session() as s:
-        dup=await s.execute(text("SELECT 1 FROM reels WHERE shortcode=:c"),{"c":code})
-        if dup.first(): return await update.message.reply_text("⚠️ Already tracked")
-        s.add(Reel(user_id=uid,shortcode=code,owner=owner.group(1),last_views=0))
-        usr=await s.get(User,uid)
-        if usr: usr.username=update.effective_user.username
-        else: s.add(User(id=uid,username=update.effective_user.username,registered=1))
+        dup = await s.execute(text("SELECT 1 FROM reels WHERE shortcode=:c"), {"c": code})
+        if dup.first():
+            return await update.message.reply_text("⚠️ This reel is already tracked.")
+        s.add(Reel(user_id=uid, shortcode=code, owner=owner.group(1), last_views=0))
+        user = await s.get(User, uid)
+        if user:
+            user.username = update.effective_user.username
+        else:
+            s.add(User(id=uid, username=update.effective_user.username, registered=1))
         await s.commit()
-    await update.message.reply_text("✅ Added!")
+    await update.message.reply_text("🎉 Reel added successfully!")
 
 @debug_handler
 async def removereel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args: return await update.message.reply_text("Usage: /removereel <shortcode>")
-    uid=update.effective_user.id; code=context.args[0]
+    if not context.args:
+        return await update.message.reply_text("❗ Usage: /removereel <shortcode>")
+    uid = update.effective_user.id
+    code = context.args[0]
     async with async_session() as s:
-        res=await s.execute(text(
-            "SELECT id FROM reels WHERE shortcode=:c AND user_id=:u"),{"c":code,"u":uid})
-        if not res.first(): return await update.message.reply_text("❗ Not found or not yours.")
-        await s.execute(text("DELETE FROM reels WHERE shortcode=:c AND user_id=:u"),{"c":code,"u":uid})
+        res = await s.execute(
+            text("SELECT id FROM reels WHERE shortcode=:c AND user_id=:u"), {"c": code, "u": uid}
+        )
+        if not res.first():
+            return await update.message.reply_text("⚠️ Reel not found or doesn't belong to you.")
+        await s.execute(
+            text("DELETE FROM reels WHERE shortcode=:c AND user_id=:u"), {"c": code, "u": uid}
+        )
         await s.commit()
-    await update.message.reply_text("✅ Removed reel")
+    await update.message.reply_text("🗑️ Reel removed.")
 
 @debug_handler
 async def myreels(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid=update.effective_user.id
+    uid = update.effective_user.id
     async with async_session() as s:
-        res=await s.execute(text("SELECT shortcode FROM reels WHERE user_id=:u"),{"u":uid})
-        lst=res.scalars().all()
-    if not lst: return await update.message.reply_text("No reels.")
-    await update.message.reply_text("\n".join(f"https://www.instagram.com/reel/{c}/" for c in lst))
+        res = await s.execute(text("SELECT shortcode FROM reels WHERE user_id=:u"), {"u": uid})
+        lst = res.scalars().all()
+    if not lst:
+        return await update.message.reply_text("😔 You have no tracked reels.")
+    msg = "📋 *Your Tracked Reels:*\n" + "\n".join(
+        f"https://www.instagram.com/reel/{c}/" for c in lst
+    )
+    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
 @debug_handler
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid=update.effective_user.id
+    uid = update.effective_user.id
     async with async_session() as s:
-        r1=await s.execute(text(
+        r1 = await s.execute(text(
             "SELECT COALESCE(SUM(last_views),0), COUNT(*), COUNT(DISTINCT owner) "
-            "FROM reels WHERE user_id=:u"),{"u":uid})
-        tot=r1.fetchone() or (0,0,0)
-        r2=await s.execute(text(
+            "FROM reels WHERE user_id=:u"), {"u": uid}
+        )
+        tot = r1.fetchone() or (0, 0, 0)
+        r2 = await s.execute(text(
             "SELECT shortcode,last_views FROM reels WHERE user_id=:u "
-            "ORDER BY last_views DESC LIMIT 10"),{"u":uid})
-        top=r2.fetchall()
-    msg=f"Total Views: {tot[0]}\nTotal Videos: {tot[1]}\nTotal Accounts: {tot[2]}\n\n"
-    for c,v in top: msg+=f"https://www.instagram.com/reel/{c}/ - {v} views\n"
-    await update.message.reply_text(msg)
+            "ORDER BY last_views DESC LIMIT 10"), {"u": uid}
+        )
+        top = r2.fetchall()
+    msg = (
+        f"📊 *Your Stats* 📊\n"
+        f"• Total Views: *{tot[0]}*\n"
+        f"• Total Videos: *{tot[1]}*\n"
+        f"• Total Accounts: *{tot[2]}*\n\n"
+    )
+    for c, v in top:
+        msg += f"• https://www.instagram.com/reel/{c}/ - *{v}* views\n"
+    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
 @debug_handler
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return await update.message.reply_text("🚫 Unauthorized.")
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("🚫 *Unauthorized!*", parse_mode=ParseMode.MARKDOWN)
     async with async_session() as s:
-        r=await s.execute(text(
+        r = await s.execute(text(
             "SELECT u.username, COUNT(r.id), COALESCE(SUM(r.last_views),0) "
             "FROM reels r JOIN users u ON r.user_id=u.id "
             "GROUP BY u.username ORDER BY SUM(r.last_views) DESC"
         ))
-        data=r.fetchall()
-    if not data: return await update.message.reply_text("No data.")
-    msg="Leaderboard:\n"
-    for name, vids, views in data: msg+=f"{name} - {vids} vids - {views} views\n"
-    await update.message.reply_text(msg)
+        data = r.fetchall()
+    if not data:
+        return await update.message.reply_text("🏁 No data available.")
+    msg = "🏆 *Global Leaderboard* 🏆\n\n"
+    for name, vids, views in data:
+        msg += f"• {name} - {vids} vids - {views} views\n"
+    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
 @debug_handler
 async def checkapi(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return await update.message.reply_text("🚫 Unauthorized.")
-    sample="https://www.instagram.com/reel/Cx9L5JkNkfJ/"
-    res=await fetch_page(sample)
-    await update.message.reply_text("✅ Zyte OK" if res["status"]==200 else "❌ Zyte failed")
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("🚫 *Unauthorized!*", parse_mode=ParseMode.MARKDOWN)
+    sample = "https://www.instagram.com/reel/Cx9L5JkNkfJ/"
+    res = await fetch_page(sample)
+    reply = "✅ Zyte API is reachable!" if res["status"] == 200 else "❌ Zyte API failed!"
+    await update.message.reply_text(reply)
 
 @debug_handler
 async def forceupdate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return await update.message.reply_text("🚫 Unauthorized.")
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("🚫 *Unauthorized!*", parse_mode=ParseMode.MARKDOWN)
     async with async_session() as s:
-        reels=await s.execute(text("SELECT id,shortcode FROM reels"))
-        count=0
-        for rid,sc in reels.fetchall():
-            v=scrape_views(sc)
-            await s.execute(text("UPDATE reels SET last_views=:v WHERE id=:i"),{"v":v,"i":rid})
-            count+=1
+        reels = await s.execute(text("SELECT id,shortcode FROM reels"))
+        count = 0
+        for rid, sc in reels.fetchall():
+            v = scrape_views(sc)
+            await s.execute(
+                text("UPDATE reels SET last_views=:v WHERE id=:i"), {"v": v, "i": rid}
+            )
+            count += 1
             await asyncio.sleep(1)
         await s.commit()
-    await update.message.reply_text(f"✅ Updated {count} reels")
+    await update.message.reply_text(f"🔄 Refreshed *{count}* reels!", parse_mode=ParseMode.MARKDOWN)
 
 # Setup
 app = Application.builder().token(TOKEN).build()
@@ -288,7 +325,8 @@ async def main():
     await init_db()
     asyncio.create_task(run_health())
     await app.initialize(); await app.start(); await app.updater.start_polling(drop_pending_updates=True)
-    logger.info("Bot running🚀"); await asyncio.Event().wait()
+    logger.info("🤖 Bot is running! 🚀")
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
     asyncio.run(main())
