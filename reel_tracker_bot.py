@@ -184,7 +184,7 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         users = (await s.execute(text("SELECT DISTINCT user_id FROM reels"))).all()
     for (uid,) in users:
         async with AsyncSessionLocal() as s:
-            reels = (await s.execute(text("SELECT last_views FROM reels WHERE user_id=:u"), {"u": uid})).all()
+            reels = (await s.execute(text("SELECT id, shortcode FROM reels WHERE user_id=:u"), {"u": uid})).all()
         total_views = sum(r[0] for r in reels)
         stats.append((uid, total_views))
     stats.sort(key=lambda x: x[1], reverse=True)
