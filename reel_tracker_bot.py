@@ -1,4 +1,3 @@
-```python
 import os
 import re
 import asyncio
@@ -139,7 +138,7 @@ def can_use_command(user_id: int) -> bool:
 # Command handlers
 @debug_handler
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = (
+    commands = (
         "👋 Welcome to *Reel Tracker Bot*!\n"
         "\n📋 *Available Commands:*\n"
         "/addreel <link> - Add a reel to track 🎯\n"
@@ -154,7 +153,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/deletereel <shortcode> - Admin: Remove a reel ❌\n"
         "/broadcast <message> - Admin: Broadcast a message 📣"
     )
-    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text(commands, parse_mode=ParseMode.MARKDOWN)
 
 @debug_handler
 async def addreel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -166,10 +165,10 @@ async def addreel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("❌ Invalid reel URL.")
     sc = match.group(1)
     async with async_session() as session:
-        exists = await session.execute(
+        result = await session.execute(
             text("SELECT id FROM reels WHERE shortcode = :s"), {"s": sc}
         )
-        if exists.first():
+        if result.first():
             return await update.message.reply_text("⚠️ Already tracking.")
         session.add(Reel(user_id=update.effective_user.id, shortcode=sc))
         await session.commit()
@@ -179,10 +178,10 @@ async def addreel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def myreels(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     async with async_session() as session:
-        res = await session.execute(
+        result = await session.execute(
             text("SELECT shortcode FROM reels WHERE user_id = :u"), {"u": uid}
         )
-        reels = res.scalars().all()
+        reels = result.scalars().all()
     if not reels:
         return await update.message.reply_text("😔 No reels tracked.")
     msg = "\n".join(f"https://www.instagram.com/reel/{r}/" for r in reels)
@@ -212,19 +211,14 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @debug_handler
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with async_session() as session:
-        rows = await session.execute(
+        result = await session.execute(
             text("SELECT user_id, SUM(last_views) as total_views FROM reels GROUP BY user_id ORDER BY total_views DESC")
         )
-        data = rows.all()
+        data = result.all()
     if not data:
-        return await update.message.reply_text("� No data.")
+        return await update.message.reply_text("🏁 No data.")
     lines = [f"{i+1}. {uid}: {v} views" for i, (uid, v) in enumerate(data)]
-    await update.message.reply_text("
-".join(lines))
-
-# ... rest of the code remains unchanged ...
-```
-
+    await update.message.reply_text("\n".join(lines))
 
 @debug_handler
 async def forceupdate(update: Update, context: ContextTypes.DEFAULT_TYPE):
