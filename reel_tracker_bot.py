@@ -39,6 +39,17 @@ if not all([TOKEN, DATABASE_URL, SCRAPINGBEE_API_KEY]):
     print("❌ TOKEN, DATABASE_URL, and SCRAPINGBEE_API_KEY must be set in .env")
     exit(1)
 
+app_fastapi = FastAPI()
+
+@app_fastapi.get("/")
+async def root():
+    return {"message": "Bot is running 🚀"}
+
+async def start_health_check_server():
+    config = uvicorn.Config(app_fastapi, host="0.0.0.0", port=int(os.getenv("PORT", 10000)), log_level="info")
+    server = uvicorn.Server(config)
+    await server.serve()
+    
 # Setup Logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
