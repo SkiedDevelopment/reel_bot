@@ -603,8 +603,8 @@ async def main():
     await app.run_polling(drop_pending_updates=True)
 
 # --- Actual Start ---
+
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        print("👋 Bot stopped manually.")
+    loop = asyncio.get_event_loop()
+    loop.create_task(main())
+    loop.run_forever()
