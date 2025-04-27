@@ -483,6 +483,81 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(leaderboard_text, parse_mode="HTML")
 
+# /Broadcast
+@debug_handler
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("🚫 You are not authorized to use this command.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("ℹ️ Usage: /broadcast <your message>")
+        return
+
+    message = "📢 " + " ".join(context.args)
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(text("SELECT user_id FROM users"))
+        users = result.scalars().all()
+
+    count = 0
+    for user_id in users:
+        try:
+            await context.bot.send_message(chat_id=user_id, text=message)
+            count += 1
+            await asyncio.sleep(0.05)  # small delay to avoid hitting flood limits
+        except Exception as e:
+            print(f"Failed to send to {user_id}: {e}")
+
+    await update.message.reply_text(f"✅ Broadcast sent to {count} users.")
+
+# /Deleteuser
+@debug_handler
+async def deleteuser(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("🚫 You are not authorized to use this command.")
+        return
+
+    if len(context.args) != 1:
+        await update.message.reply_text("ℹ️ Usage: /deleteuser <telegram_user_id>")
+        return
+
+    try:
+        tgt = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("⚠️ Invalid user ID format.")
+        return
+
+    async with AsyncSessionLocal() as session:
+        await session.execute(text("DELETE FROM views WHERE reel_id IN (SELECT id FROM reels WHERE user_id = :uid)"), {"uid": tgt})
+        await session.execute(text("DELETE FROM reels WHERE user_id = :uid"), {"uid": tgt})
+        await session.execute(text("DELETE FROM user_accounts WHERE user_id = :uid"), {"uid": tgt})
+        await session.execute(text("DELETE FROM users WHERE user_id = :uid"), {"uid": tgt})
+        await session.commit()
+
+    await update.message.reply_text(f"✅ Successfully deleted all data for user ID `{tgt}`.", parse_mode="Markdown")
+
+# /Deletereel
+@debug_handler
+async def deletereel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("🚫 You are not authorized to use this command.")
+        return
+
+    if len(context.args) != 1:
+        await update.message.reply_text("ℹ️ Usage: /deletereel <reel_shortcode>")
+        return
+
+    shortcode = context.args[0]
+
+    async with AsyncSessionLocal() as session:
+        await session.execute(text("DELETE FROM views WHERE reel_id IN (SELECT id FROM reels WHERE shortcode = :sc)"), {"sc": shortcode})
+        await session.execute(text("DELETE FROM reels WHERE shortcode = :sc"), {"sc": shortcode})
+        await session.commit()
+
+    await update.message.reply_text(f"✅ Successfully deleted reel `{shortcode}`.", parse_mode="Markdown")
+
+
 # Error handler
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     tb = "".join(traceback.format_exception(None, context.error, context.error.__traceback__))
