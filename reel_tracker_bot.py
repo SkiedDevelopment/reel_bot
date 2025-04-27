@@ -375,6 +375,33 @@ async def check_api(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ API Error: {e}")
 
+# /leaderboard
+@debug_handler
+async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ You are not authorized to view the leaderboard.")
+        return
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(text("SELECT user_id FROM reels"))
+        user_ids = set([row[0] for row in result.all()])
+
+    leaderboard_text = "🏆 <b>Leaderboard</b> 🏆\n\n"
+
+    for uid in user_ids:
+        async with AsyncSessionLocal() as session:
+            count = await session.execute(text("SELECT COUNT(*) FROM reels WHERE user_id=:uid"), {"uid": uid})
+            views = await session.execute(text(
+                "SELECT SUM(current_views) FROM reels WHERE user_id=:uid"
+            ), {"uid": uid})
+            
+            total_reels = count.scalar_one()
+            total_views = views.scalar_one() or 0
+
+        leaderboard_text += f"👤 User {uid}\n🎬 Reels: {total_reels} | 👀 Views: {total_views}\n\n"
+
+    await update.message.reply_text(leaderboard_text, parse_mode="HTML")
+
 # Error handler
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     tb = "".join(traceback.format_exception(None, context.error, context.error.__traceback__))
