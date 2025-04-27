@@ -328,6 +328,8 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 continue
     await update.message.reply_text("✅ Broadcast sent successfully.")
 
+app = Application.builder().token(TOKEN).build()
+
 app.add_handler(CommandHandler("start", start_command))
 app.add_handler(CommandHandler("add", add_reel))
 app.add_handler(CommandHandler("myreels", my_reels))
