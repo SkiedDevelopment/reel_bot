@@ -374,8 +374,6 @@ app.add_handler(CommandHandler("auditlog", auditlog))
 app.add_handler(CommandHandler("broadcast", broadcast))
 app.add_handler(CommandHandler("checkapi", check_scraper_api))
 
-app.add_handler(upload_conv)
-
 async def main():
     await init_db()
 
