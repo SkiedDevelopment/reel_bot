@@ -563,6 +563,10 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     tb = "".join(traceback.format_exception(None, context.error, context.error.__traceback__))
     await log_to_group(app.bot, f"❗️ Unhandled error:\n<pre>{tb}</pre>")
 
+async def start_health_check_server():
+    # Dummy health server to avoid startup crash
+    pass
+
 
 # --- Main Bot Setup & Start ---
 
