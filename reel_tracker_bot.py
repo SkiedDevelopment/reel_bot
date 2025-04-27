@@ -133,49 +133,45 @@ def can_use(uid: int) -> bool:
 @debug_handler
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cmds = (
-        "🤖 *Reel Tracker Bot* 🤖\n\n"
-        "🔒 /addaccount <uid> <@insta> - Admin: Allow a user's IG handle\n"
-        "🔓 /removeaccount <uid> - Admin: Revoke a user's IG handle\n"
-        "➕ /addreel <link> - Add a reel to track\n"
-        "➖ /removereel <code> - Remove a tracked reel\n"
-        "📋 /myreels - List your reels\n"
-        "📊 /stats - Your stats\n"
-        "🏆 /leaderboard - Admin: Global leaderboard\n"
-        "🔧 /checkapi - Admin: Zyte API test\n"
-        "🔄 /forceupdate - Admin: Refresh all reels"
+        "🤖 <b>Reel Tracker Bot</b> 🤖\n\n"
+        "🔒 <code>/addaccount &lt;uid&gt; &lt;@insta&gt;</code> - Admin: Allow a user's IG handle\n"
+        "🔓 <code>/removeaccount &lt;uid&gt;</code> - Admin: Revoke a user's IG handle\n"
+        "➕ <code>/addreel &lt;link&gt;</code> - Add a reel to track\n"
+        "➖ <code>/removereel &lt;code&gt;</code> - Remove a tracked reel\n"
+        "📋 <code>/myreels</code> - List your reels\n"
+        "📊 <code>/stats</code> - Your stats\n"
+        "🏆 <code>/leaderboard</code> - Admin: Global leaderboard\n"
+        "🔧 <code>/checkapi</code> - Admin: Zyte API test\n"
+        "🔄 <code>/forceupdate</code> - Admin: Refresh all reels"
     )
-    await update.message.reply_text(cmds, parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text(cmds, parse_mode=ParseMode.HTML)
 
 @debug_handler
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     async with async_session() as session:
-        res_tot = await session.execute(text(
+        r_tot = await session.execute(text(
             "SELECT COALESCE(SUM(last_views),0), COUNT(*), COUNT(DISTINCT owner) "
             "FROM reels WHERE user_id = :u"
         ), {"u": uid})
-        tot = res_tot.fetchone() or (0, 0, 0)
-        res_top = await session.execute(text(
+        tot = r_tot.fetchone() or (0, 0, 0)
+        r_top = await session.execute(text(
             "SELECT shortcode, last_views FROM reels WHERE user_id = :u "
             "ORDER BY last_views DESC LIMIT 10"
         ), {"u": uid})
-        top_list = res_top.fetchall()
-    lines = [
-        "📊 *Your Stats* 📊",
-        f"• Total Views: *{tot[0]}*",
-        f"• Total Videos: *{tot[1]}*",
-        f"• Total Accounts: *{tot[2]}*",
-        ""
-    ]
+        top_list = r_top.fetchall()
+    msg = f"📊 <b>Your Stats</b> 📊\n"
+    msg += f"• Total Views: <b>{tot[0]}</b>\n"
+    msg += f"• Total Videos: <b>{tot[1]}</b>\n"
+    msg += f"• Total Accounts: <b>{tot[2]}</b>\n\n"
     for code, views in top_list:
-        lines.append(f"• <https://www.instagram.com/reel/{code}/> - *{views}* views")
-    msg = "\n".join(lines)
-    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+        msg += f"• <a href='https://www.instagram.com/reel/{code}/'>Reel</a> - <b>{views}</b> views\n"
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 @debug_handler
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        return await update.message.reply_text("🚫 *Unauthorized!*", parse_mode=ParseMode.MARKDOWN)
+        return await update.message.reply_text("🚫 <b>Unauthorized!</b>", parse_mode=ParseMode.HTML)
     async with async_session() as session:
         res = await session.execute(text(
             "SELECT u.username, COUNT(r.id) AS vids, COALESCE(SUM(r.last_views),0) AS views "
@@ -186,10 +182,10 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data = res.fetchall()
     if not data:
         return await update.message.reply_text("🏁 No data available.")
-    msg = ["🏆 *Global Leaderboard* 🏆", ""]
+    msg = "🏆 <b>Global Leaderboard</b> 🏆\n\n"
     for name, vids, views in data:
-        msg.append(f"• {name} - {vids} vids - {views} views")
-    await update.message.reply_text("\n".join(msg), parse_mode=ParseMode.MARKDOWN)
+        msg += f"• {name} - {vids} vids - {views} views\n"
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 @debug_handler
 async def addaccount(update: Update, context: ContextTypes.DEFAULT_TYPE):
