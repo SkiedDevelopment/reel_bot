@@ -289,26 +289,30 @@ async def main():
 
    if __name__ == "__main__":
     import asyncio
-    asyncio.run(start_health())
 
-    app = ApplicationBuilder().token(TOKEN).build()
+    async def runner():
+        await start_health()
 
-    # User handlers
-    app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(CommandHandler("submit", submit))
-    app.add_handler(CommandHandler("stats", stats))
-    app.add_handler(CommandHandler("remove", remove))
-    app.add_handler(CommandHandler("checkapi", checkapi))
+        app = ApplicationBuilder().token(TOKEN).build()
 
-    # Admin handlers
-    app.add_handler(CommandHandler("forceupdate", forceupdate))
-    app.add_handler(CommandHandler("leaderboard", leaderboard))
-    app.add_handler(CommandHandler("userstatsid", userstatsid))
-    app.add_handler(CommandHandler("broadcast", broadcast))
-    app.add_handler(CommandHandler("adminstats", adminstats))
-    app.add_handler(CommandHandler("deleteuser", deleteuser))
-    app.add_handler(CommandHandler("deletereel", deletereel))
-    app.add_handler(CommandHandler("auditlog", auditlog))
+        # User handlers
+        app.add_handler(CommandHandler("start", start_cmd))
+        app.add_handler(CommandHandler("submit", submit))
+        app.add_handler(CommandHandler("stats", stats))
+        app.add_handler(CommandHandler("remove", remove))
+        app.add_handler(CommandHandler("checkapi", checkapi))
 
-    print("🤖 Bot running...")
-    app.run_polling(drop_pending_updates=True)
+        # Admin handlers
+        app.add_handler(CommandHandler("forceupdate", forceupdate))
+        app.add_handler(CommandHandler("leaderboard", leaderboard))
+        app.add_handler(CommandHandler("userstatsid", userstatsid))
+        app.add_handler(CommandHandler("broadcast", broadcast))
+        app.add_handler(CommandHandler("adminstats", adminstats))
+        app.add_handler(CommandHandler("deleteuser", deleteuser))
+        app.add_handler(CommandHandler("deletereel", deletereel))
+        app.add_handler(CommandHandler("auditlog", auditlog))
+
+        print("🤖 Bot running...")
+        await app.run_polling(drop_pending_updates=True)
+
+    asyncio.run(runner())
