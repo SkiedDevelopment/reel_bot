@@ -287,22 +287,21 @@ async def main():
         """))
     asyncio.create_task(start_health())
 
-   if __name__ == "__main__":
+if __name__ == "__main__":
     import asyncio
 
-    async def runner():
+    async def start_bot():
         await start_health()
 
         app = ApplicationBuilder().token(TOKEN).build()
 
-        # User handlers
+        # Commands
         app.add_handler(CommandHandler("start", start_cmd))
         app.add_handler(CommandHandler("submit", submit))
         app.add_handler(CommandHandler("stats", stats))
         app.add_handler(CommandHandler("remove", remove))
         app.add_handler(CommandHandler("checkapi", checkapi))
 
-        # Admin handlers
         app.add_handler(CommandHandler("forceupdate", forceupdate))
         app.add_handler(CommandHandler("leaderboard", leaderboard))
         app.add_handler(CommandHandler("userstatsid", userstatsid))
@@ -312,7 +311,8 @@ async def main():
         app.add_handler(CommandHandler("deletereel", deletereel))
         app.add_handler(CommandHandler("auditlog", auditlog))
 
-        print("🤖 Bot running...")
+        print("🤖 Bot is running...")
         await app.run_polling(drop_pending_updates=True)
 
-    asyncio.run(runner())
+    asyncio.run(start_bot())
+
