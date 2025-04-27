@@ -330,6 +330,53 @@ async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- Admin Commands & Background Jobs ---
 
+@debug_handler
+async def userstatsid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("🚫 You are not authorized to use this command.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("⚠️ Usage: /userstatsid <telegram_user_id>")
+        return
+
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("⚠️ Please provide a valid numeric user ID.")
+        return
+
+    async with AsyncSessionLocal() as session:
+        user_acc = await session.execute(text(
+            "SELECT insta_handle FROM user_accounts WHERE user_id = :uid"
+        ), {"uid": target_id})
+        accounts = [row[0] for row in user_acc.fetchall()]
+
+        reels_data = await session.execute(text(
+            "SELECT shortcode FROM reels WHERE user_id = :uid"
+        ), {"uid": target_id})
+        reels = [row[0] for row in reels_data.fetchall()]
+
+    if not reels:
+        await update.message.reply_text("😶 This user has no tracked reels.")
+        return
+
+    lines = [f"📋 <b>User ID:</b> <code>{target_id}</code>"]
+    if accounts:
+        lines.append("🔗 <b>Linked Accounts:</b> " + ", ".join(accounts))
+    else:
+        lines.append("🔗 No accounts linked.")
+
+    lines.append(f"🎬 <b>Total Reels:</b> {len(reels)}")
+    lines.append("")
+    lines.append("<b>Reels:</b>")
+
+    for idx, shortcode in enumerate(reels, 1):
+        lines.append(f"{idx}. https://instagram.com/reel/{shortcode}")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML", disable_web_page_preview=True)
+
+
 # Track views
 async def track_all_views():
     async with AsyncSessionLocal() as session:
