@@ -330,6 +330,30 @@ async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- Admin Commands & Background Jobs ---
 
+# / auditlog
+@debug_handler
+async def auditlog(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("🚫 You are not authorized to use this command.")
+        return
+
+    async with AsyncSessionLocal() as session:
+        rows = (await session.execute(text(
+            "SELECT user_id, action, shortcode, timestamp FROM audit ORDER BY id DESC LIMIT 20"
+        ))).fetchall()
+
+    if not rows:
+        await update.message.reply_text("📭 No recent audit logs found.")
+        return
+
+    lines = ["🕵️‍♂️ <b>Last 20 Actions:</b>"]
+    for uid, action, shortcode, ts in rows:
+        lines.append(f"• <b>{action}</b> by <code>{uid}</code> → <i>{shortcode}</i> ({ts})")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+# /User stats
 @debug_handler
 async def userstatsid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
