@@ -290,29 +290,29 @@ async def main():
 if __name__ == "__main__":
     import asyncio
 
-    async def start_bot():
-        await start_health()
+    # Start health server
+    loop = asyncio.get_event_loop()
+    loop.create_task(start_health())
 
-        app = ApplicationBuilder().token(TOKEN).build()
+    # Setup bot
+    app = ApplicationBuilder().token(TOKEN).build()
 
-        # Commands
-        app.add_handler(CommandHandler("start", start_cmd))
-        app.add_handler(CommandHandler("submit", submit))
-        app.add_handler(CommandHandler("stats", stats))
-        app.add_handler(CommandHandler("remove", remove))
-        app.add_handler(CommandHandler("checkapi", checkapi))
+    # User commands
+    app.add_handler(CommandHandler("start", start_cmd))
+    app.add_handler(CommandHandler("submit", submit))
+    app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("remove", remove))
+    app.add_handler(CommandHandler("checkapi", checkapi))
 
-        app.add_handler(CommandHandler("forceupdate", forceupdate))
-        app.add_handler(CommandHandler("leaderboard", leaderboard))
-        app.add_handler(CommandHandler("userstatsid", userstatsid))
-        app.add_handler(CommandHandler("broadcast", broadcast))
-        app.add_handler(CommandHandler("adminstats", adminstats))
-        app.add_handler(CommandHandler("deleteuser", deleteuser))
-        app.add_handler(CommandHandler("deletereel", deletereel))
-        app.add_handler(CommandHandler("auditlog", auditlog))
+    # Admin commands
+    app.add_handler(CommandHandler("forceupdate", forceupdate))
+    app.add_handler(CommandHandler("leaderboard", leaderboard))
+    app.add_handler(CommandHandler("userstatsid", userstatsid))
+    app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(CommandHandler("adminstats", adminstats))
+    app.add_handler(CommandHandler("deleteuser", deleteuser))
+    app.add_handler(CommandHandler("deletereel", deletereel))
+    app.add_handler(CommandHandler("auditlog", auditlog))
 
-        print("🤖 Bot is running...")
-        await app.run_polling(drop_pending_updates=True)
-
-    asyncio.run(start_bot())
-
+    print("🤖 Bot is running...")
+    app.run_polling(drop_pending_updates=True)
