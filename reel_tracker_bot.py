@@ -389,7 +389,8 @@ app.add_handler(CommandHandler("userstatsid", userstatsid))
 app.add_handler(CommandHandler("forceupdate", forceupdate))
 app.add_handler(CommandHandler("auditlog", auditlog))
 app.add_handler(CommandHandler("broadcast", broadcast))
-app.add_handler(CommandHandler("checkapi", check_scraper_api))
+app.add_handler(CommandHandler("checkapi", check_scrapingbee_api))
+
 
 
 async def main():
