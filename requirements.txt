@@ -1,9 +1,7 @@
 python-telegram-bot==20.3
-python-dotenv
-python3-setuptools
-SQLAlchemy
-asyncpg
 aiohttp
-nest_asyncio
-playwright
-playwright-stealth
+asyncpg
+SQLAlchemy
+requests
+beautifulsoup4
+python-dotenv
