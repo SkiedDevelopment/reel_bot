@@ -1,4 +1,3 @@
-
 import os
 import re
 import asyncio
@@ -56,7 +55,6 @@ async_session = sessionmaker(engine, expire_on_commit=False, class_=AsyncSession
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        # Migrations
         await conn.execute(text("ALTER TABLE reels ADD COLUMN IF NOT EXISTS last_views BIGINT DEFAULT 0;"))
         await conn.execute(text("ALTER TABLE reels ADD COLUMN IF NOT EXISTS owner VARCHAR;"))
         await conn.execute(text("ALTER TABLE allowed_accounts ADD COLUMN IF NOT EXISTS insta_handle VARCHAR;"))
@@ -121,7 +119,6 @@ async def fetch_page(url: str) -> dict:
         return {"status": r.status_code, "content": r.text}
 
 # Cooldown
-user_cd = {}
 def can_use(uid: int) -> bool:
     now = datetime.utcnow()
     last = user_cd.get(uid)
