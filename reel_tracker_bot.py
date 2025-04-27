@@ -45,6 +45,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Debughandler
+def debug_handler(func):
+    async def wrapper(update, context):
+        try:
+            return await func(update, context)
+        except Exception as e:
+            if update.message:
+                await update.message.reply_text(f"⚠️ Error: {e}")
+            raise e
+    return wrapper
+
 # Database Setup
 Base = declarative_base()
 engine = create_async_engine(DATABASE_URL, echo=False)
