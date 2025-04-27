@@ -1,4 +1,3 @@
-
 import os
 import re
 import asyncio
@@ -6,7 +5,8 @@ import logging
 from datetime import datetime
 from dotenv import load_dotenv
 from telegram.ext import Application, CommandHandler, ContextTypes
-from telegram import Update, ParseMode
+from telegram import Update
+from telegram.constants import ParseMode
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy import Column, Integer, String, BigInteger, text
