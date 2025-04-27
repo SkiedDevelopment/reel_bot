@@ -331,7 +331,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 app = Application.builder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start_cmd))
-app.add_handler(CommandHandler("add", add_reel))
+app.add_handler(CommandHandler("add", addreel))
 app.add_handler(CommandHandler("myreels", my_reels))
 app.add_handler(CommandHandler("forceupdate", force_update))
 app.add_handler(CommandHandler("checksession", check_session))
