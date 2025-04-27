@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 import os
-import sys
 import re
-import json
 import asyncio
-import traceback
+import logging
+import requests
+import json
 from datetime import datetime
 from aiohttp import web
-from telegram import Update, Document
+from telegram import Update
+from telegram.constants import ParseMode
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
-    ConversationHandler,
     filters,
     ContextTypes,
 )
@@ -20,493 +20,294 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import text
 from dotenv import load_dotenv
-import nest_asyncio
-from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async
+from bs4 import BeautifulSoup
 
-# --- Load .env ---
+# ── Load .env ────────────────────────────────────────────────────────────────
 load_dotenv()
-nest_asyncio.apply()
 
-# --- Config ---
-TOKEN = os.getenv("TOKEN")
-ADMIN_IDS = [x.strip() for x in os.getenv("ADMIN_ID", "").split(",") if x.strip()]
-LOG_GROUP_ID = os.getenv("LOG_GROUP_ID")
-PORT = int(os.getenv("PORT", "10000"))
-DATABASE_URL = os.getenv("DATABASE_URL")
-COOLDOWN_SEC = int(os.getenv("COOLDOWN_SEC", "60"))
-COOKIE_FILE = "session_cookies.json"
+TOKEN         = os.getenv("TOKEN")
+ADMIN_IDS     = [x.strip() for x in os.getenv("ADMIN_ID", "").split(",") if x.strip()]
+LOG_GROUP_ID  = os.getenv("LOG_GROUP_ID")
+PORT          = int(os.getenv("PORT", "10000"))
+DATABASE_URL  = os.getenv("DATABASE_URL")
+SCRAPERAPI_KEY = os.getenv("SCRAPERAPI_KEY")
 
-if not TOKEN or not DATABASE_URL:
-    sys.exit("❌ TOKEN and DATABASE_URL must be set in .env")
+if not TOKEN or not DATABASE_URL or not SCRAPERAPI_KEY:
+    raise Exception("❌ Please set TOKEN, DATABASE_URL, SCRAPERAPI_KEY in .env")
 
+# ── Normalize DATABASE_URL ────────────────────────────────────────────────────
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
+elif DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-# --- Database Setup ---
+# ── Database ───────────────────────────────────────────────────────────────────
 engine = create_async_engine(DATABASE_URL, future=True)
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
-async def init_db():
-    ddl = """
-    CREATE TABLE IF NOT EXISTS users (
-      user_id BIGINT PRIMARY KEY,
-      username TEXT
-    );
-    CREATE TABLE IF NOT EXISTS user_accounts (
-      user_id BIGINT,
-      insta_handle TEXT,
-      PRIMARY KEY(user_id, insta_handle)
-    );
-    CREATE TABLE IF NOT EXISTS reels (
-      id SERIAL PRIMARY KEY,
-      user_id BIGINT,
-      shortcode TEXT,
-      username TEXT,
-      UNIQUE(user_id, shortcode)
-    );
-    CREATE TABLE IF NOT EXISTS views (
-      reel_id INTEGER,
-      timestamp TEXT,
-      count INTEGER
-    );
-    CREATE TABLE IF NOT EXISTS cooldowns (
-      user_id BIGINT PRIMARY KEY,
-      last_submit TEXT
-    );
-    CREATE TABLE IF NOT EXISTS audit (
-      id SERIAL PRIMARY KEY,
-      user_id BIGINT,
-      action TEXT,
-      shortcode TEXT,
-      timestamp TEXT
-    );
-    """
-    async with engine.begin() as conn:
-        for stmt in ddl.split(";"):
-            stmt = stmt.strip()
-            if stmt:
-                await conn.execute(text(stmt))
-
-# --- Helper Functions ---
-
-# Load cookies and apply stealth
-async def load_cookies_with_stealth(context):
-    if os.path.exists(COOKIE_FILE):
-        with open(COOKIE_FILE, "r") as f:
-            cookies = json.load(f)
-        await context.add_cookies(cookies)
-
-# Extract Reel shortcode
+# ── Helper Functions ───────────────────────────────────────────────────────────
 def extract_shortcode(link: str) -> str | None:
-    match = re.search(r"reel/([^/?#&]+)", link)
-    return match.group(1) if match else None
+    m = re.search(r"instagram\.com/reel/([^/?]+)", link)
+    return m.group(1) if m else None
 
-# Check if user is admin
 def is_admin(uid: int) -> bool:
     return str(uid) in ADMIN_IDS
 
-# Fetch views for a single Reel using Playwright + Stealth
+# ── Fetch Reel Views using ScraperAPI ───────────────────────────────────────────
 async def fetch_reel_views(shortcode: str) -> int | None:
+    url = f"https://www.instagram.com/reel/{shortcode}/"
+
+    params = {
+        "api_key": SCRAPERAPI_KEY,
+        "url": url,
+        "render": "true"
+    }
+
     try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                locale="en-US"
-            )
-            page = await context.new_page()
-            await stealth_async(page)
-            await load_cookies_with_stealth(context)
-
-            await page.goto(f"https://www.instagram.com/reel/{shortcode}/", timeout=60000)
-            await page.wait_for_selector('video', timeout=15000)
-
-            spans = await page.query_selector_all("span")
+        r = requests.get("http://api.scraperapi.com/", params=params, timeout=30)
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.text, "html.parser")
+            spans = soup.find_all("span")
             for span in spans:
-                text_content = await span.inner_text()
-                if "views" in text_content.lower():
-                    views = int(text_content.replace(",", "").replace("views", "").strip())
-                    await browser.close()
-                    return views
-
-            await browser.close()
+                text = span.get_text()
+                if "views" in text.lower():
+                    try:
+                        number_part = text.lower().replace("views", "").strip().replace(",", "")
+                        return int(number_part)
+                    except ValueError:
+                        continue
+        else:
+            print(f"⚠️ ScraperAPI error: {r.status_code}")
             return None
     except Exception as e:
-        print(f"⚠️ fetch_reel_views error for {shortcode}: {e}")
+        print(f"❌ ScraperAPI fetch failed: {e}")
         return None
 
-# Track all views
-async def track_all_views():
-    async with AsyncSessionLocal() as session:
-        rows = (await session.execute(text("SELECT id,shortcode FROM reels"))).all()
-
-    if not rows:
-        print("📭 No reels to track.")
-        return
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            locale="en-US"
-        )
-        page = await context.new_page()
-        await stealth_async(page)
-        await load_cookies_with_stealth(context)
-
-        for rid, sc in rows:
-            try:
-                await page.goto(f"https://www.instagram.com/reel/{sc}/", timeout=60000)
-                await page.wait_for_selector('video', timeout=15000)
-
-                spans = await page.query_selector_all("span")
-                view_count = None
-                for span in spans:
-                    text_content = await span.inner_text()
-                    if "views" in text_content.lower():
-                        view_count = int(text_content.replace(",", "").replace("views", "").strip())
-                        break
-
-                if view_count is not None:
-                    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    async with AsyncSessionLocal() as session:
-                        await session.execute(text(
-                            "INSERT INTO views(reel_id,timestamp,count) VALUES(:r,:t,:c)"
-                        ), {"r": rid, "t": ts, "c": view_count})
-                        await session.commit()
-
-            except Exception as e:
-                print(f"⚠️ track_all_views error for {sc}: {e}")
-
-            await asyncio.sleep(2)
-
-        await browser.close()
-
-# --- /start Command ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ── User Commands ──────────────────────────────────────────────────────────────
+async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🚀 <b>Welcome to ReelTracker Bot!</b>\n\n"
-        "Here are your available commands:\n\n"
-        "🎯 <b>/submit &lt;reel links&gt;</b> — Start tracking reels\n"
-        "📊 <b>/stats</b> — View your current stats\n"
-        "🗑 <b>/remove &lt;reel URL&gt;</b> — Remove a reel from tracking\n"
-        "🔒 Admin Commands:\n"
-        "🔄 /forceupdate — Force update all reels\n"
-        "🛡️ /checksession — Check Instagram login status\n"
-        "📤 /uploadsession — Upload Instagram cookies\n",
-        parse_mode="HTML"
+        "👋 Welcome to *Reel Tracker Bot*!\n\n"
+        "✨ Available Commands:\n"
+        "• /submit <links> — 📥 Track up to 5 Reels\n"
+        "• /stats — 📊 View your tracked Reels\n"
+        "• /remove <URL> — 🗑 Remove a tracked Reel\n"
+        "• /checkapi — 🛡️ Check ScraperAPI status\n",
+        parse_mode=ParseMode.MARKDOWN
     )
 
-# --- /ping Command ---
-async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🏓 Pong! I'm alive!")
-
-# --- /submit Command ---
 async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        raw = update.message.text or ""
-        payload = raw[len("/submit"):].strip()
-        links = [l.strip() for l in payload.replace("\n", " ").split(",") if l.strip()]
-        if not links or len(links) > 5:
-            return await update.message.reply_text("⚠️ You can submit up to 5 Reels at once.")
-
-        uid = update.effective_user.id
-        now = datetime.now()
-
-        # Cooldown check
-        async with AsyncSessionLocal() as s:
-            row = (await s.execute(text(
-                "SELECT last_submit FROM cooldowns WHERE user_id=:u"
-            ), {"u": uid})).fetchone()
-            if row:
-                last = datetime.fromisoformat(row[0])
-                rem = COOLDOWN_SEC - (now - last).total_seconds()
-                if rem > 0:
-                    msg = await update.message.reply_text(f"⌛ Cooldown active. Wait {int(rem)}s.")
-                    asyncio.create_task(asyncio.sleep(30) and context.bot.delete_message(update.effective_chat.id, msg.message_id))
-                    return
-
-            await s.execute(text(
-                "INSERT INTO cooldowns(user_id,last_submit) VALUES(:u,:t) "
-                "ON CONFLICT(user_id) DO UPDATE SET last_submit=EXCLUDED.last_submit"
-            ), {"u": uid, "t": now.isoformat()})
-            await s.commit()
-
-        successes, failures = 0, []
-        for link in links:
-            sc = extract_shortcode(link)
-            if not sc:
-                failures.append((link, "Invalid URL"))
-                continue
-            ts = now.strftime("%Y-%m-%d %H:%M:%S")
-            async with AsyncSessionLocal() as s:
-                try:
-                    await s.execute(text(
-                        "INSERT INTO reels(user_id,shortcode,username) VALUES(:u,:c,'')"
-                    ), {"u": uid, "c": sc})
-                    await s.execute(text(
-                        "INSERT INTO views(reel_id,timestamp,count) VALUES((SELECT id FROM reels WHERE user_id=:u AND shortcode=:c),:t,0)"
-                    ), {"u": uid, "c": sc, "t": ts})
-                    await s.execute(text(
-                        "INSERT INTO audit(user_id,action,shortcode,timestamp) VALUES(:u,'submitted',:c,:t)"
-                    ), {"u": uid, "c": sc, "t": ts})
-                    await s.commit()
-                    successes += 1
-                except Exception:
-                    failures.append((link, "Already submitted"))
-
-        lines = [f"✅ Successfully submitted {successes} reel(s)!"]
-        if failures:
-            lines.append("❌ Failed:")
-            for l, r in failures:
-                lines.append(f"- {l}: {r}")
-        await update.message.reply_text("\n".join(lines))
-
-    except Exception as e:
-        print(f"⚠️ /submit error: {e}")
-        await update.message.reply_text("❌ Something went wrong. Try again later.")
-
-# --- /stats Command ---
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        uid = update.effective_user.id
-        async with AsyncSessionLocal() as s:
-            rres = await s.execute(text("SELECT id FROM reels WHERE user_id=:u"), {"u": uid})
-            reels = rres.fetchall()
-
-        if not reels:
-            return await update.message.reply_text("📭 You are not tracking any reels yet.")
-
-        total_views = 0
-        details = []
-        for rid, in reels:
-            async with AsyncSessionLocal() as s:
-                row = (await s.execute(text(
-                    "SELECT count FROM views WHERE reel_id=:r ORDER BY timestamp DESC LIMIT 1"
-                ), {"r": rid})).fetchone()
-            cnt = row[0] if row else 0
-            total_views += cnt
-            details.append(cnt)
-
-        lines = [
-            "📊 <b>Your Stats:</b>",
-            f"🎬 Tracked Reels: {len(reels)}",
-            f"👀 Total Views: {total_views}"
-        ]
-        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
-
-    except Exception as e:
-        print(f"⚠️ /stats error: {e}")
-        await update.message.reply_text("❌ Something went wrong.")
-
-# --- /remove Command ---
-async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        if not context.args:
-            return await update.message.reply_text("⚠️ Usage: /remove <Reel URL>")
-
-        uid = update.effective_user.id
-        sc = extract_shortcode(context.args[0])
+    raw = update.message.text or ""
+    payload = raw[len("/submit"):].strip()
+    links = [l.strip() for l in payload.replace("\n", " ").split(",") if l.strip()]
+    if not links or len(links) > 5:
+        return await update.message.reply_text("❌ Usage: /submit <up to 5 comma-separated Reel URLs>")
+    uid = update.effective_user.id
+    now = datetime.now()
+    successes, failures = 0, []
+    for link in links:
+        sc = extract_shortcode(link)
         if not sc:
-            return await update.message.reply_text("❌ Invalid Reel URL.")
-
+            failures.append((link, "invalid URL"))
+            continue
         async with AsyncSessionLocal() as s:
-            row = (await s.execute(text(
-                "SELECT id FROM reels WHERE user_id=:u AND shortcode=:c"
-            ), {"u": uid, "c": sc})).fetchone()
+            try:
+                await s.execute(text(
+                    "INSERT INTO reels(user_id, shortcode, created_at) VALUES (:u, :c, :t)"
+                ), {"u": uid, "c": sc, "t": now.strftime("%Y-%m-%d %H:%M:%S")})
+                await s.commit()
+                successes += 1
+            except Exception:
+                failures.append((link, "already submitted"))
+    msg = [f"✅ Submitted {successes} Reel(s)."]
+    if failures:
+        msg.append("❌ Failures:")
+        for l, r in failures:
+            msg.append(f"- {l}: {r}")
+    await update.message.reply_text("\n".join(msg))
 
-            if not row:
-                return await update.message.reply_text("⚠️ This Reel is not being tracked.")
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    async with AsyncSessionLocal() as s:
+        rres = await s.execute(text("SELECT shortcode FROM reels WHERE user_id=:u"), {"u": uid})
+        reels = rres.fetchall()
+    if not reels:
+        return await update.message.reply_text("📭 No tracked Reels yet.")
+    msg = ["📈 *Your Reels:*"]
+    for (sc,) in reels:
+        msg.append(f"🔗 https://www.instagram.com/reel/{sc}")
+    await update.message.reply_text("\n".join(msg), parse_mode=ParseMode.MARKDOWN)
 
-            rid = row[0]
-            await s.execute(text("DELETE FROM views WHERE reel_id=:r"), {"r": rid})
-            await s.execute(text("DELETE FROM reels WHERE id=:r"), {"r": rid})
-            await s.commit()
+async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        return await update.message.reply_text("❌ Usage: /remove <Reel URL>")
+    uid = update.effective_user.id
+    sc = extract_shortcode(context.args[0])
+    if not sc:
+        return await update.message.reply_text("❌ Invalid URL.")
+    async with AsyncSessionLocal() as s:
+        await s.execute(text("DELETE FROM reels WHERE user_id=:u AND shortcode=:c"), {"u": uid, "c": sc})
+        await s.commit()
+    await update.message.reply_text(f"🗑️ Removed Reel: {sc}")
 
-        await update.message.reply_text(f"🗑 Removed Reel {sc} successfully!")
+async def checkapi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    views = await fetch_reel_views("CRmYX-ppVn8")  # random public reel
+    if views is not None:
+        await update.message.reply_text("✅ ScraperAPI key is *working fine!* 🚀", parse_mode=ParseMode.MARKDOWN)
+    else:
+        await update.message.reply_text("⚠️ ScraperAPI key might have issues or limits.")
 
-    except Exception as e:
-        print(f"⚠️ /remove error: {e}")
-        await update.message.reply_text("❌ Something went wrong.")
-
-# --- /uploadsession Command (Admin only) ---
-async def upload_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return await update.message.reply_text("❌ You are not authorized.")
-
-    await update.message.reply_text("📤 Please send your session_cookies.json file.")
-    return 1
-
-async def upload_session_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    doc: Document = update.message.document
-    if not doc or not doc.file_name.endswith(".json"):
-        return await update.message.reply_text("⚠️ Invalid file type. Please upload a .json session file.")
-
-    file = await context.bot.get_file(doc.file_id)
-    await file.download_to_drive(COOKIE_FILE)
-    await update.message.reply_text("✅ Session saved! Restarting bot now...")
-    os._exit(0)
-
-# --- /checksession Command (Stealth enabled) ---
-async def checksession(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return await update.message.reply_text("❌ You are not authorized.")
-
-    await update.message.reply_text("🛡️ Checking Instagram session...")
-
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
-            context_browser = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                locale="en-US"
-            )
-            page = await context_browser.new_page()
-            await stealth_async(page)
-            await load_cookies_with_stealth(context_browser)
-
-            response = await page.goto("https://www.instagram.com/", timeout=60000)
-
-            if "accounts/login" in page.url or "/accounts/" in page.url:
-                await update.message.reply_text("❌ Session invalid. Please upload a new session.")
-            elif response.status >= 400:
-                await update.message.reply_text(f"⚠️ HTTP error detected: {response.status}")
-            else:
-                await update.message.reply_text("✅ Session is active and valid!")
-
-            await browser.close()
-
-    except Exception as e:
-        print(f"⚠️ /checksession error: {e}")
-        await update.message.reply_text("⚠️ Error checking session.")
-
-# --- /forceupdate Command (with live progress bar) ---
+# ── Admin Commands ──────────────────────────────────────────────────────────────
 async def forceupdate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return await update.message.reply_text("❌ You are not authorized.")
+    async with AsyncSessionLocal() as s:
+        rres = await s.execute(text("SELECT id,shortcode FROM reels"))
+        reels = rres.fetchall()
+    msg = ["🔄 Force updating Reels..."]
+    for rid, sc in reels:
+        views = await fetch_reel_views(sc)
+        if views is not None:
+            async with AsyncSessionLocal() as s:
+                await s.execute(text(
+                    "UPDATE reels SET last_views=:v WHERE id=:i"
+                ), {"v": views, "i": rid})
+                await s.commit()
+            msg.append(f"✅ {sc}: {views} views")
+        await asyncio.sleep(1)
+    await update.message.reply_text("\n".join(msg))
 
-    progress_message = await update.message.reply_text("🔄 Starting manual update...")
+async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("❌ You are not authorized.")
+    stats = []
+    async with AsyncSessionLocal() as s:
+        users = (await s.execute(text("SELECT DISTINCT user_id FROM reels"))).all()
+    for (uid,) in users:
+        async with AsyncSessionLocal() as s:
+            reels = (await s.execute(text("SELECT last_views FROM reels WHERE user_id=:u"), {"u": uid})).all()
+        total_views = sum(r[0] for r in reels)
+        stats.append((uid, total_views))
+    stats.sort(key=lambda x: x[1], reverse=True)
+    lines = ["🏆 *Leaderboard:*"]
+    for i, (uid, views) in enumerate(stats, 1):
+        lines.append(f"{i}. `{uid}` — {views} views")
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
-    success = 0
-    failed = 0
+async def userstatsid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id) or len(context.args) != 1:
+        return await update.message.reply_text("❌ Usage: /userstatsid <telegram_id>")
+    tgt = int(context.args[0])
+    async with AsyncSessionLocal() as s:
+        reels = (await s.execute(text("SELECT shortcode,last_views FROM reels WHERE user_id=:u"), {"u": tgt})).fetchall()
+    if not reels:
+        return await update.message.reply_text("📭 No reels found for this user.")
+    lines = [f"📊 Stats for user `{tgt}`:"]
+    total = 0
+    for sc, v in reels:
+        lines.append(f"🔗 https://instagram.com/reel/{sc} — {v} views")
+        total += v
+    lines.append(f"\n**Total views:** {total}")
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
-    async with AsyncSessionLocal() as session:
-        rows = (await session.execute(text("SELECT id,shortcode FROM reels"))).all()
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id) or not context.args:
+        return await update.message.reply_text("❌ Usage: /broadcast <message>")
+    msg = "📢 " + " ".join(context.args)
+    async with AsyncSessionLocal() as s:
+        users = (await s.execute(text("SELECT DISTINCT user_id FROM reels"))).all()
+    for (uid,) in users:
+        try:
+            await context.bot.send_message(uid, msg)
+        except:
+            pass
+    await update.message.reply_text("✅ Broadcast sent.")
 
-    total = len(rows)
-    if total == 0:
-        return await progress_message.edit_text("📭 No reels to update.")
+async def auditlog(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("❌ You are not authorized.")
+    # (optional) — if you want full logging feature later
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
-        context_browser = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            locale="en-US"
-        )
-        page = await context_browser.new_page()
-        await stealth_async(page)
-        await load_cookies_with_stealth(context_browser)
+async def adminstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("❌ You are not authorized.")
+    stats = []
+    async with AsyncSessionLocal() as s:
+        users = (await s.execute(text("SELECT DISTINCT user_id FROM reels"))).all()
+    for (uid,) in users:
+        async with AsyncSessionLocal() as s:
+            reels = (await s.execute(text("SELECT last_views FROM reels WHERE user_id=:u"), {"u": uid})).all()
+        total_views = sum(r[0] for r in reels)
+        stats.append((uid, len(reels), total_views))
+    stats.sort(key=lambda x: x[2], reverse=True)
+    lines = ["📋 *Admin Stats:*"]
+    for uid, count, views in stats:
+        lines.append(f"👤 {uid} — {count} reels, {views} views")
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
-        for idx, (rid, sc) in enumerate(rows, 1):
-            try:
-                url = f"https://www.instagram.com/reel/{sc}/"
-                await page.goto(url, timeout=60000)
-                await page.wait_for_selector('video', timeout=10000)
+async def deleteuser(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id) or len(context.args) != 1:
+        return await update.message.reply_text("❌ Usage: /deleteuser <telegram_id>")
+    tgt = int(context.args[0])
+    async with AsyncSessionLocal() as s:
+        await s.execute(text("DELETE FROM reels WHERE user_id=:u"), {"u": tgt})
+        await s.commit()
+    await update.message.reply_text(f"✅ Deleted user data: {tgt}")
 
-                spans = await page.query_selector_all("span")
-                view_count = None
-                for span in spans:
-                    text_content = await span.inner_text()
-                    if "views" in text_content.lower():
-                        view_count = int(text_content.replace(",", "").replace("views", "").strip())
-                        break
+async def deletereel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id) or len(context.args) != 1:
+        return await update.message.reply_text("❌ Usage: /deletereel <shortcode>")
+    code = context.args[0]
+    async with AsyncSessionLocal() as s:
+        await s.execute(text("DELETE FROM reels WHERE shortcode=:c"), {"c": code})
+        await s.commit()
+    await update.message.reply_text(f"✅ Deleted reel: {code}")
 
-                if view_count is not None:
-                    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    async with AsyncSessionLocal() as session:
-                        await session.execute(text(
-                            "INSERT INTO views(reel_id,timestamp,count) VALUES(:r,:t,:c)"
-                        ), {"r": rid, "t": ts, "c": view_count})
-                        await session.commit()
-                    success += 1
-                else:
-                    failed += 1
-
-            except Exception as e:
-                print(f"⚠️ forceupdate error for {sc}: {e}")
-                failed += 1
-
-            if idx % 10 == 0 or idx == total:
-                try:
-                    await progress_message.edit_text(
-                        f"🔄 Updating...\n"
-                        f"✅ Success: {success}\n"
-                        f"❌ Failed: {failed}\n"
-                        f"🎯 Progress: {idx}/{total}"
-                    )
-                except Exception as e:
-                    print(f"⚠️ Progress edit error: {e}")
-
-            await asyncio.sleep(2)
-
-        await browser.close()
-
-    await progress_message.edit_text(
-        f"✅ Forceupdate Complete!\n"
-        f"🎯 Total Reels: {total}\n"
-        f"✅ Success: {success}\n"
-        f"❌ Failed: {failed}"
-    )
-# --- Health Check (for systemd uptime monitoring) ---
+# ── Health Server ──────────────────────────────────────────────────────────────
 async def health(request: web.Request) -> web.Response:
-    return web.Response(text="✅ OK - ReelTracker is alive.")
+    return web.Response(text="✅ Bot is healthy.")
 
-async def start_health_server():
-    app = web.Application()
-    app.router.add_get("/health", health)
-    runner = web.AppRunner(app)
+async def start_health():
+    srv = web.Application()
+    srv.router.add_get("/health", health)
+    runner = web.AppRunner(srv)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
 
-# --- Global Error Handler ---
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    tb = "".join(traceback.format_exception(None, context.error, context.error.__traceback__))
-    print(f"❗️ Unhandled Error:\n{tb}")
-
-# --- Main Runner ---
+# ── Main ───────────────────────────────────────────────────────────────────────
 async def main():
-    await init_db()
-    asyncio.create_task(start_health_server())
-    asyncio.create_task(track_all_views())
+    async with engine.begin() as conn:
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS reels (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT,
+                shortcode TEXT,
+                created_at TEXT,
+                last_views INTEGER DEFAULT 0
+            )
+        """))
+    asyncio.create_task(start_health())
 
     app = ApplicationBuilder().token(TOKEN).build()
 
     # User commands
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("ping", ping))
+    app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("submit", submit))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("remove", remove))
+    app.add_handler(CommandHandler("checkapi", checkapi))
 
     # Admin commands
     app.add_handler(CommandHandler("forceupdate", forceupdate))
-    app.add_handler(CommandHandler("checksession", checksession))
+    app.add_handler(CommandHandler("leaderboard", leaderboard))
+    app.add_handler(CommandHandler("userstatsid", userstatsid))
+    app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(CommandHandler("adminstats", adminstats))
+    app.add_handler(CommandHandler("deleteuser", deleteuser))
+    app.add_handler(CommandHandler("deletereel", deletereel))
+    app.add_handler(CommandHandler("auditlog", auditlog))
 
-    # Upload session flow
-    upload_conv = ConversationHandler(
-        entry_points=[CommandHandler("uploadsession", upload_session)],
-        states={1: [MessageHandler(filters.Document.ALL, upload_session_receive)]},
-        fallbacks=[]
-    )
-    app.add_handler(upload_conv)
-
-    app.add_error_handler(error_handler)
-
-    print("🤖 ReelTracker Bot is running...")
+    print("🤖 Bot running...")
     await app.run_polling(drop_pending_updates=True)
 
-# --- Entrypoint ---
 if __name__ == "__main__":
-    nest_asyncio.apply()
     asyncio.run(main())
