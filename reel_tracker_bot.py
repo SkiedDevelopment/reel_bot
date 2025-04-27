@@ -25,6 +25,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# --- Debug Handler Decorator ---
+def debug_handler(func):
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        try:
+            return await func(update, context)
+        except Exception as e:
+            print(f"❌ Exception in {func.__name__}: {e}")
+            await update.message.reply_text("⚠️ Oops! Something went wrong while processing your command.")
+    return wrapper
+
 # Bot Config
 TOKEN        = os.getenv("TOKEN")
 ADMIN_IDS    = [x.strip() for x in os.getenv("ADMIN_ID", "").split(",") if x.strip()]
