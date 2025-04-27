@@ -173,18 +173,21 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return await update.message.reply_text("🚫 <b>Unauthorized!</b>", parse_mode=ParseMode.HTML)
     async with async_session() as session:
-        res = await session.execute(text(
-            "SELECT u.username, COUNT(r.id) AS vids, COALESCE(SUM(r.last_views),0) AS views "
+        # Start from users to ensure alias u.id is valid
+        result = await session.execute(text(
+            "SELECT u.username, COUNT(r.id) AS vids, COALESCE(SUM(r.last_views), 0) AS views "
             "FROM users u "
             "LEFT JOIN reels r ON r.user_id = u.id "
             "GROUP BY u.username ORDER BY views DESC"
         ))
-        data = res.fetchall()
+        data = result.fetchall()
     if not data:
         return await update.message.reply_text("🏁 No data available.")
-    msg = "🏆 <b>Global Leaderboard</b> 🏆\n\n"
+    msg_lines = ["🏆 <b>Global Leaderboard</b> 🏆", ""]
     for name, vids, views in data:
-        msg += f"• {name} - {vids} vids - {views} views\n"
+        msg_lines.append(f"• {name} - {vids} vids - {views} views")
+    msg = "
+".join(msg_lines)
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 @debug_handler
