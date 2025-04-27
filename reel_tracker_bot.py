@@ -291,7 +291,9 @@ if __name__ == "__main__":
     import asyncio
 
     # Start health server
-    loop = asyncio.get_event_loop()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     loop.create_task(start_health())
 
     # Setup bot
