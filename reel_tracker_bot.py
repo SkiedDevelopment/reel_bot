@@ -135,7 +135,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = ["📈 *Your Reels:*"]
     for (sc,) in reels:
         msg.append(f"🔗 https://www.instagram.com/reel/{sc}")
-    await update.message.reply_text("\n".join(msg), parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text("\n".join(msg), parse_mode=ParseMode.HTML)
 
 async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
