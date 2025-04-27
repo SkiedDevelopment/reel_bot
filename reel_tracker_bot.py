@@ -142,21 +142,23 @@ def can_use_command(user_id: int) -> bool:
         return True
     return False
 
-async def check_scrapingbee_api():
+async def fetch_reel_page(url: str) -> dict:
+    """Fetch reel data using ScrapingBee API."""
     try:
-        response = requests.get(
-            "https://app.scrapingbee.com/api/v1/",
-            params={
-                "api_key": SCRAPINGBEE_API_KEY,
-                "url": "https://www.instagram.com/",
-                "render_js": "True"
-            },
-            timeout=20,
-        )
-        return response.status_code == 200
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                "https://app.scrapingbee.com/api/v1/",
+                params={
+                    "api_key": SCRAPINGBEE_API_KEY,
+                    "url": url,
+                    "render_js": "true"
+                }
+            )
+            response.raise_for_status()
+            return {"status_code": response.status_code, "content": response.text}
     except Exception as e:
-        print(f"API Check failed: {e}")
-        return False
+        logger.error(f"Error fetching reel page: {e}")
+        return None
 
 # /start
 @debug_handler
@@ -217,16 +219,15 @@ async def myreels(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # /checkapi
 @debug_handler
-async def check_scraper_api(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Check if ScrapingBee API is working."""
-    try:
-        resp = await fetch_reel_page("https://www.instagram.com")
-        if resp and resp.status_code == 200:
-            await update.message.reply_text("✅ Scraper API is working properly!")
-        else:
-            await update.message.reply_text("⚠️ Scraper API might have issues or limits!")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Scraper API Error: {e}")
+async def check_scrapingbee_api(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Check if ScrapingBee API can fetch Instagram pages."""
+    sample_reel = "https://www.instagram.com/reel/Cx9L5JkNkfJ/"
+    result = await fetch_reel_page(sample_reel)
+    
+    if result and result.get("status_code") == 200:
+        await update.message.reply_text("✅ ScrapingBee API is working properly!")
+    else:
+        await update.message.reply_text("❌ ScrapingBee API might be blocked or over limit.")
 
 # /mystats
 @debug_handler
