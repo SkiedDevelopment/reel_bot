@@ -1,4 +1,4 @@
-
+```python
 import os
 import re
 import asyncio
@@ -201,9 +201,12 @@ async def checkapi(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     async with async_session() as session:
-        cnt, tot = await session.execute(
-            text("SELECT COUNT(*), COALESCE(SUM(last_views),0) FROM reels WHERE user_id = :u"), {"u": uid}
-        ).fetchone()
+        result = await session.execute(
+            text("SELECT COUNT(*), COALESCE(SUM(last_views), 0) FROM reels WHERE user_id = :u"),
+            {"u": uid}
+        )
+        row = result.fetchone()
+    cnt, tot = row if row else (0, 0)
     await update.message.reply_text(f"📊 You: {cnt} reels, {tot} views.")
 
 @debug_handler
@@ -214,9 +217,14 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         data = rows.all()
     if not data:
-        return await update.message.reply_text("🏁 No data.")
+        return await update.message.reply_text("� No data.")
     lines = [f"{i+1}. {uid}: {v} views" for i, (uid, v) in enumerate(data)]
-    await update.message.reply_text("\n".join(lines))
+    await update.message.reply_text("
+".join(lines))
+
+# ... rest of the code remains unchanged ...
+```
+
 
 @debug_handler
 async def forceupdate(update: Update, context: ContextTypes.DEFAULT_TYPE):
