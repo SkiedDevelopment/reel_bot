@@ -2,7 +2,7 @@ import os
 import asyncio
 import logging
 from dotenv import load_dotenv
-
+from telegram.ext import Application
 from telegram import Update, Document
 from telegram.constants import ParseMode
 from telegram.ext import (
