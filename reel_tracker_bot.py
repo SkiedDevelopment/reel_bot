@@ -289,7 +289,7 @@ async def main():
 
    if __name__ == "__main__":
     import asyncio
-    asyncio.run(start_health())  # Start health check server
+    asyncio.run(start_health())
 
     app = ApplicationBuilder().token(TOKEN).build()
 
@@ -312,8 +312,3 @@ async def main():
 
     print("🤖 Bot running...")
     app.run_polling(drop_pending_updates=True)
-
-            raise
-
-
-
