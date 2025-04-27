@@ -390,16 +390,21 @@ app.add_handler(CommandHandler("auditlog", auditlog))
 app.add_handler(CommandHandler("broadcast", broadcast))
 app.add_handler(CommandHandler("checkapi", check_scraper_api))
 
+
 async def main():
-    await init_db()
-
-    # Start health check HTTP server (optional for uptime monitoring)
+    # Start health check server in background
     asyncio.create_task(start_health_check_server())
-
-    # Start the bot
-    print("🚀 Bot is starting...")
-    await app.run_polling(drop_pending_updates=True)
     
+    # Start Telegram Bot polling
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling(drop_pending_updates=True)
+    
+    print("Bot is running 🚀")
+    
+    # Keep running forever
+    await asyncio.Event().wait()
+
 if __name__ == "__main__":
     asyncio.run(main())
 
