@@ -201,15 +201,19 @@ async def myreels(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # /mystats
 @debug_handler
-async def mystats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the user's overall statistics."""
+    user_id = update.effective_user.id
     async with async_session() as session:
-        reels = (await session.execute(text("SELECT shortcode, last_views FROM reels WHERE user_id=:u"), {"u": user.id})).all()
-        if not reels:
-            return await update.message.reply_text("❗ No reels found. Add one using /addreel.")
-        
-        lines = [f"🎞️ https://www.instagram.com/reel/{shortcode} ➔ *{views}* views" for shortcode, views in reels]
-        await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+        result = await session.execute(text("SELECT COUNT(*), COALESCE(SUM(last_views), 0) FROM reels WHERE user_id = :uid"), {"uid": user_id})
+        count, total_views = result.fetchone()
+    
+    await update.message.reply_text(
+        f"📊 **Your Stats:**\n\n"
+        f"🔹 Total Reels: {count}\n"
+        f"🔹 Total Views: {total_views}",
+        parse_mode=ParseMode.MARKDOWN
+    )
 
 # /leaderboard
 @debug_handler
