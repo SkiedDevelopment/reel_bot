@@ -191,7 +191,7 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = ["🏆 *Leaderboard:*"]
     for i, (uid, views) in enumerate(stats, 1):
         lines.append(f"{i}. `{uid}` — {views} views")
-    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+    reels = (await s.execute(text("SELECT id, shortcode FROM reels WHERE user_id=:u"), {"u": uid})).all()
 
 async def userstatsid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id) or len(context.args) != 1:
