@@ -35,7 +35,7 @@ SCRAPINGBEE_API_KEY = os.getenv("SCRAPPINGBEE_API_KEY")
 PORT = int(os.getenv("PORT", 8000))
 COOLDOWN_SEC = int(os.getenv("COOLDOWN_SEC", 60))
 
-if not all([TOKEN, DATABASE_URL, SCRAPPINGBEE_API_KEY]):
+if not all([TOKEN, DATABASE_URL, SCRAPINGBEE_API_KEY]):
     print("❌ TOKEN, DATABASE_URL, and SCRAPPINGBEE_API_KEY must be set in .env")
     exit(1)
 
