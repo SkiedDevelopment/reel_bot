@@ -389,13 +389,13 @@ async def main():
     global app
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # User Commands
-    app.add_handler(CommandHandler("start", start_command))
+    # --- USER COMMANDS ---
+    app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("submit", submit))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("remove", remove))
 
-    # Admin Commands
+    # --- ADMIN COMMANDS ---
     app.add_handler(CommandHandler("forceupdate", force_update))
     app.add_handler(CommandHandler("checkapi", check_api))
     app.add_handler(CommandHandler("leaderboard", leaderboard))
@@ -405,20 +405,17 @@ async def main():
     app.add_handler(CommandHandler("deleteuser", deleteuser))
     app.add_handler(CommandHandler("deletereel", deletereel))
 
-    # Upload session command
+    # --- UPLOAD SESSION COMMAND ---
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("uploadsession", upload_session_start)],
-        states={
-            1: [MessageHandler(filters.Document.ALL, upload_session)]
-        },
-        fallbacks=[CommandHandler("cancel", upload_session_cancel)],
+        states={1: [MessageHandler(filters.Document.ALL, upload_session)]},
+        fallbacks=[CommandHandler("cancel", upload_session_cancel)]
     )
     app.add_handler(conv_handler)
 
-    # Error handler
     app.add_error_handler(error_handler)
 
-    # Start background tasks
+    # Background tasks
     asyncio.create_task(start_health_check_server())
     asyncio.create_task(track_loop())
 
