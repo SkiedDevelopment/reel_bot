@@ -1,7 +1,5 @@
-python-telegram-bot==20.3
-aiohttp
-asyncpg
-SQLAlchemy
-requests
-beautifulsoup4
-python-dotenv
+python-telegram-bot==20.5
+SQLAlchemy==2.0.20
+asyncpg==0.27.0
+aiohttp==3.8.5
+python-dotenv==1.0.1
