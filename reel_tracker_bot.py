@@ -373,7 +373,6 @@ app.add_handler(CommandHandler("forceupdate", forceupdate))
 app.add_handler(CommandHandler("auditlog", auditlog))
 app.add_handler(CommandHandler("broadcast", broadcast))
 app.add_handler(CommandHandler("checkapi", check_scraper_api))
-app.add_handler(CommandHandler("uploadsession", upload_session_start))
 
 app.add_handler(upload_conv)
 
