@@ -206,7 +206,7 @@ async def addreel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if supplied:
             if supplied.lower() != expected.lower():
                 return await update.message.reply_text(
-                    f"🚫 That reel isn’t from @{expected}."
+                    f"🚫 That reel isn't from @{expected}."
                 )
         else:
             try:
@@ -215,7 +215,7 @@ async def addreel(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             except Exception:
                 return await update.message.reply_text(
-                    "❌ Couldn’t fetch reel data."
+                    "❌ Couldn't fetch reel data."
                 )
             if post.owner_username.lower() != expected.lower():
                 return await update.message.reply_text(
@@ -225,9 +225,7 @@ async def addreel(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "SELECT 1 FROM reels WHERE shortcode = :c"
         ), {"c": code})
         if dup.scalar():
-            return await update.message.reply_text(
-                "⚠️ Already added."
-            )
+            return await update.message.reply_text("⚠️ Already added.")
         await session.execute(text(
             "INSERT INTO reels (user_id, shortcode) VALUES (:u, :c)"
         ), {"u": uid, "c": code})
@@ -344,6 +342,13 @@ async def userstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Usage: /userstats <user_id>"
         )
     tid = int(context.args[0])
+    # fetch Telegram name
+    try:
+        chat = await context.bot.get_chat(tid)
+        full_name = (chat.first_name or "") + (" " + chat.last_name if chat.last_name else "")
+        full_name = full_name.strip()
+    except Exception:
+        full_name = str(tid)
     async with AsyncSessionLocal() as session:
         vw = await session.execute(text(
             "SELECT total_views FROM users WHERE user_id = :u"
@@ -360,7 +365,7 @@ async def userstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         row2 = ah.fetchone()
         handle = row2[0] if row2 else "—"
     msg = [
-        f"📊 <b>Stats for {tid} (@{handle})</b>",
+        f"📊 <b>Stats for {full_name} (@{handle})</b>",
         f"• Total views: <b>{views}</b>",
         "🎥 <b>Reels:</b>",
     ]
@@ -377,6 +382,13 @@ async def allstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "SELECT DISTINCT user_id FROM reels"
         ))).fetchall()]
         for uid in uids:
+            # fetch Telegram name
+            try:
+                chat = await context.bot.get_chat(uid)
+                full_name = (chat.first_name or "") + (" " + chat.last_name if chat.last_name else "")
+                full_name = full_name.strip()
+            except Exception:
+                full_name = str(uid)
             ah = await session.execute(text(
                 "SELECT insta_handle FROM allowed_accounts WHERE user_id = :u"
             ), {"u": uid})
@@ -387,7 +399,7 @@ async def allstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ), {"u": uid})
             reels = [r[0] for r in rl.fetchall()]
             msg = [
-                f"👤 <b>User {uid} (@{handle})</b>",
+                f"👤 <b>{full_name} (@{handle})</b>",
                 "🎥 <b>Reels:</b>",
             ]
             for sc in reels:
