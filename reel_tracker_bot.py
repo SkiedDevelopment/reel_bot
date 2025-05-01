@@ -16,6 +16,8 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy import Column, Integer, String, BigInteger, text
 
+from instaloader import Instaloader, Post
+
 # ─── Load config ────────────────────────────────────────────────────────────────
 load_dotenv()
 TOKEN        = os.getenv("TOKEN")
@@ -53,13 +55,10 @@ AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=F
 
 async def init_db():
     async with engine.begin() as conn:
-        # create tables if missing
         await conn.run_sync(Base.metadata.create_all)
-        # ensure manual views column
         await conn.execute(text(
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS total_views BIGINT DEFAULT 0"
         ))
-        # ensure allowed_accounts table
         await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS allowed_accounts (
                 id SERIAL PRIMARY KEY,
@@ -76,7 +75,7 @@ class Reel(Base):
 
 class User(Base):
     __tablename__ = "users"
-    user_id     = Column(BigInteger, primary_key=True)        # ← changed from 'id'
+    user_id     = Column(BigInteger, primary_key=True)
     username    = Column(String, nullable=True)
     registered  = Column(Integer, default=0)
     total_views = Column(BigInteger, default=0)
@@ -87,7 +86,6 @@ def is_admin(user_id: int) -> bool:
 
 def debug_handler(fn):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        # log every command to the log group
         if LOG_GROUP_ID and update.message:
             user = update.effective_user
             name = user.full_name
@@ -108,7 +106,6 @@ def debug_handler(fn):
     return wrapper
 
 # ─── Telegram Handlers ──────────────────────────────────────────────────────────
-
 @debug_handler
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cmds = [
@@ -163,35 +160,56 @@ async def addreel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         return await update.message.reply_text("❗ Provide a reel link.")
     url = context.args[0]
-    m = re.search(r"instagram\.com/(?P<handle>[^/]+)/reel/(?P<code>[^/?]+)", url)
+    # parse handle if present, otherwise use Instaloader
+    m = re.search(
+        r"^(?:https?://)?(?:www\.|m\.)?instagram\.com/(?:(?P<supplied>[^/]+)/)?reel/(?P<code>[^/?#&]+)",
+        url
+    )
     if not m:
-        return await update.message.reply_text(
-            "❌ Use a link like instagram.com/<your_handle>/reel/<shortcode>"
-        )
-    handle, shortcode = m.group("handle"), m.group("code")
+        return await update.message.reply_text("❌ Please give a valid Instagram reel URL.")
+    supplied_handle = m.group("supplied")
+    shortcode = m.group("code")
     uid = update.effective_user.id
 
     async with AsyncSessionLocal() as session:
-        # verify they have a linked account
         acc = await session.execute(text(
             "SELECT insta_handle FROM allowed_accounts WHERE user_id = :u"
         ), {"u": uid})
         row = acc.fetchone()
         if not row:
             return await update.message.reply_text(
-                "🚫 No linked IG account. Ask admin to /addaccount.", parse_mode=ParseMode.HTML
+                "🚫 No IG account linked—ask admin to /addaccount.", parse_mode=ParseMode.HTML
             )
-        if handle.lower() != row[0].lower():
-            return await update.message.reply_text(
-                f"🚫 Link doesn’t belong to @{row[0]}", parse_mode=ParseMode.HTML
-            )
+        expected = row[0]
 
-        # insert if not already added
-        exists = await session.execute(text(
+        if supplied_handle:
+            if supplied_handle.lower() != expected.lower():
+                return await update.message.reply_text(
+                    f"🚫 That reel isn’t from @{expected}.", parse_mode=ParseMode.HTML
+                )
+        else:
+            # fetch real owner via Instaloader
+            try:
+                loader = Instaloader()
+                post = Post.from_shortcode(loader.context, shortcode)
+            except Exception:
+                return await update.message.reply_text(
+                    "❌ Couldn’t fetch reel; check the shortcode.",
+                    parse_mode=ParseMode.HTML
+                )
+            if post.owner_username.lower() != expected.lower():
+                return await update.message.reply_text(
+                    f"🚫 This reel belongs to @{post.owner_username}, not @{expected}.",
+                    parse_mode=ParseMode.HTML
+                )
+
+        dup = await session.execute(text(
             "SELECT 1 FROM reels WHERE shortcode = :s"
         ), {"s": shortcode})
-        if exists.scalar():
-            return await update.message.reply_text("⚠️ Already added.", parse_mode=ParseMode.HTML)
+        if dup.scalar():
+            return await update.message.reply_text(
+                "⚠️ You’ve already added this reel.", parse_mode=ParseMode.HTML
+            )
 
         await session.execute(text(
             "INSERT INTO reels (user_id, shortcode) VALUES (:u, :s)"
@@ -230,7 +248,6 @@ async def addviews(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("❗ Usage: /addviews <user_id> <views>")
     target_id, views = map(int, context.args)
     async with AsyncSessionLocal() as session:
-        # insert or update manual views
         res = await session.execute(text(
             "SELECT 1 FROM users WHERE user_id = :u"
         ), {"u": target_id})
@@ -249,26 +266,22 @@ async def addviews(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     async with AsyncSessionLocal() as session:
-        # total videos
         vid_res = await session.execute(text(
             "SELECT COUNT(*) FROM reels WHERE user_id = :u"
         ), {"u": uid})
         total_videos = vid_res.scalar() or 0
 
-        # manual views
         view_res = await session.execute(text(
             "SELECT total_views FROM users WHERE user_id = :u"
         ), {"u": uid})
         row = view_res.fetchone()
         total_views = row[0] if row else 0
 
-        # reel links
         reel_res = await session.execute(text(
             "SELECT shortcode FROM reels WHERE user_id = :u"
         ), {"u": uid})
         reels = [r[0] for r in reel_res.fetchall()]
 
-        # linked Instagram handle
         acc_res = await session.execute(text(
             "SELECT insta_handle FROM allowed_accounts WHERE user_id = :u"
         ), {"u": uid})
@@ -296,10 +309,11 @@ async def exportstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("🚫 Unauthorized.", parse_mode=ParseMode.HTML)
 
     async with AsyncSessionLocal() as session:
-        users = await session.execute(text(
-            "SELECT u.user_id, u.username, u.total_views, a.insta_handle "
-            "FROM users u LEFT JOIN allowed_accounts a ON u.user_id = a.user_id"
-        ))
+        users = await session.execute(text("""
+            SELECT u.user_id, u.username, u.total_views, a.insta_handle
+            FROM users u
+            LEFT JOIN allowed_accounts a ON u.user_id = a.user_id
+        """))
         users_data = users.fetchall()
 
         reels = await session.execute(text(
