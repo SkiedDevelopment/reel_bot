@@ -1,8 +1,6 @@
-python-telegram-bot==20.5
-SQLAlchemy==2.0.27
-asyncpg==0.29.0
-aiohttp==3.9.5
-python-dotenv==1.0.1
-httpx==0.27.0
-fastapi==0.110.0
-uvicorn==0.29.0
+python-dotenv
+python-telegram-bot>=20.0
+fastapi
+uvicorn
+sqlalchemy
+asyncpg
