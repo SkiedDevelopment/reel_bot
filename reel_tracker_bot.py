@@ -53,12 +53,13 @@ AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=F
 
 async def init_db():
     async with engine.begin() as conn:
+        # create tables if missing
         await conn.run_sync(Base.metadata.create_all)
         # ensure manual views column
         await conn.execute(text(
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS total_views BIGINT DEFAULT 0"
         ))
-        # allowed_accounts table
+        # ensure allowed_accounts table
         await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS allowed_accounts (
                 id SERIAL PRIMARY KEY,
@@ -75,7 +76,7 @@ class Reel(Base):
 
 class User(Base):
     __tablename__ = "users"
-    id          = Column(BigInteger, primary_key=True)
+    user_id     = Column(BigInteger, primary_key=True)        # ← changed from 'id'
     username    = Column(String, nullable=True)
     registered  = Column(Integer, default=0)
     total_views = Column(BigInteger, default=0)
@@ -151,7 +152,9 @@ async def removeaccount(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("❗ Usage: /removeaccount <user_id>")
     uid = int(context.args[0])
     async with AsyncSessionLocal() as session:
-        await session.execute(text("DELETE FROM allowed_accounts WHERE user_id = :u"), {"u": uid})
+        await session.execute(text(
+            "DELETE FROM allowed_accounts WHERE user_id = :u"
+        ), {"u": uid})
         await session.commit()
     await update.message.reply_text(f"🗑️ Unlinked IG for user {uid}.", parse_mode=ParseMode.HTML)
 
@@ -167,7 +170,9 @@ async def addreel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     handle, shortcode = m.group("handle"), m.group("code")
     uid = update.effective_user.id
+
     async with AsyncSessionLocal() as session:
+        # verify they have a linked account
         acc = await session.execute(text(
             "SELECT insta_handle FROM allowed_accounts WHERE user_id = :u"
         ), {"u": uid})
@@ -180,15 +185,19 @@ async def addreel(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await update.message.reply_text(
                 f"🚫 Link doesn’t belong to @{row[0]}", parse_mode=ParseMode.HTML
             )
+
+        # insert if not already added
         exists = await session.execute(text(
             "SELECT 1 FROM reels WHERE shortcode = :s"
         ), {"s": shortcode})
         if exists.scalar():
             return await update.message.reply_text("⚠️ Already added.", parse_mode=ParseMode.HTML)
+
         await session.execute(text(
             "INSERT INTO reels (user_id, shortcode) VALUES (:u, :s)"
         ), {"u": uid, "s": shortcode})
         await session.commit()
+
     await update.message.reply_text("✅ Reel link added!", parse_mode=ParseMode.HTML)
 
 @debug_handler
@@ -221,14 +230,17 @@ async def addviews(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("❗ Usage: /addviews <user_id> <views>")
     target_id, views = map(int, context.args)
     async with AsyncSessionLocal() as session:
-        res = await session.execute(text("SELECT 1 FROM users WHERE id = :u"), {"u": target_id})
+        # insert or update manual views
+        res = await session.execute(text(
+            "SELECT 1 FROM users WHERE user_id = :u"
+        ), {"u": target_id})
         if res.scalar():
             await session.execute(text(
-                "UPDATE users SET total_views = total_views + :v WHERE id = :u"
+                "UPDATE users SET total_views = total_views + :v WHERE user_id = :u"
             ), {"v": views, "u": target_id})
         else:
             await session.execute(text(
-                "INSERT INTO users (id, username, total_views) VALUES (:u, :un, :v)"
+                "INSERT INTO users (user_id, username, total_views) VALUES (:u, :un, :v)"
             ), {"u": target_id, "un": None, "v": views})
         await session.commit()
     await update.message.reply_text(f"✅ Added {views} views to user {target_id}.", parse_mode=ParseMode.HTML)
@@ -242,18 +254,21 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "SELECT COUNT(*) FROM reels WHERE user_id = :u"
         ), {"u": uid})
         total_videos = vid_res.scalar() or 0
+
         # manual views
         view_res = await session.execute(text(
-            "SELECT total_views FROM users WHERE id = :u"
+            "SELECT total_views FROM users WHERE user_id = :u"
         ), {"u": uid})
         row = view_res.fetchone()
         total_views = row[0] if row else 0
+
         # reel links
         reel_res = await session.execute(text(
             "SELECT shortcode FROM reels WHERE user_id = :u"
         ), {"u": uid})
         reels = [r[0] for r in reel_res.fetchall()]
-        # linked accounts
+
+        # linked Instagram handle
         acc_res = await session.execute(text(
             "SELECT insta_handle FROM allowed_accounts WHERE user_id = :u"
         ), {"u": uid})
@@ -272,19 +287,24 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg.append("\n🎥 <b>Your Reel Links:</b>")
         for sc in reels:
             msg.append(f"• https://www.instagram.com/reel/{sc}/")
+
     await update.message.reply_text("\n".join(msg), parse_mode=ParseMode.HTML)
 
 @debug_handler
 async def exportstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return await update.message.reply_text("🚫 Unauthorized.", parse_mode=ParseMode.HTML)
+
     async with AsyncSessionLocal() as session:
         users = await session.execute(text(
-            "SELECT u.id, u.username, u.total_views, a.insta_handle "
-            "FROM users u LEFT JOIN allowed_accounts a ON u.id = a.user_id"
+            "SELECT u.user_id, u.username, u.total_views, a.insta_handle "
+            "FROM users u LEFT JOIN allowed_accounts a ON u.user_id = a.user_id"
         ))
         users_data = users.fetchall()
-        reels = await session.execute(text("SELECT user_id, shortcode FROM reels"))
+
+        reels = await session.execute(text(
+            "SELECT user_id, shortcode FROM reels"
+        ))
         reels_data = reels.fetchall()
 
     lines = []
