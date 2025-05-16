@@ -18,10 +18,10 @@ from sqlalchemy import Column, Integer, String, BigInteger, text
 
 # ─── Load config ─────────────────────────────────────────────────────────────
 load_dotenv()
-TOKEN = os.getenv("TOKEN")
+TOKEN        = os.getenv("TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
-ADMIN_IDS = set(map(int, os.getenv("ADMIN_ID", "").split(",")))
-PORT = int(os.getenv("PORT", 8000))
+ADMIN_IDS    = set(map(int, os.getenv("ADMIN_ID", "").split(",")))
+PORT         = int(os.getenv("PORT", 8000))
 LOG_GROUP_ID = int(os.getenv("LOG_GROUP_ID", 0))
 ENSEMBLE_TOKEN = os.getenv("ENSEMBLE_TOKEN")
 
@@ -70,15 +70,15 @@ async def init_db():
 # ─── ORM models ───────────────────────────────────────────────────────────────
 class Reel(Base):
     __tablename__ = "reels"
-    id = Column(Integer, primary_key=True)
-    user_id = Column(BigInteger, nullable=False)
+    id        = Column(Integer, primary_key=True)
+    user_id   = Column(BigInteger, nullable=False)
     shortcode = Column(String, nullable=False)
 
 class User(Base):
     __tablename__ = "users"
-    user_id = Column(BigInteger, primary_key=True)
-    username = Column(String, nullable=True)
-    registered = Column(Integer, default=0)
+    user_id     = Column(BigInteger, primary_key=True)
+    username    = Column(String, nullable=True)
+    registered  = Column(Integer, default=0)
     total_views = Column(BigInteger, default=0)
 
 # ─── Utilities ─────────────────────────────────────────────────────────────────
@@ -163,6 +163,30 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(cmds), parse_mode=ParseMode.HTML)
 
 @debug_handler
+async def addaccount(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("🚫 Unauthorized")
+    if len(context.args) != 2:
+        return await update.message.reply_text("Usage: /addaccount <user_id> <@handle>")
+    uid = int(context.args[0]); handle = context.args[1].lstrip("@")
+    async with AsyncSessionLocal() as s:
+        await s.execute(text("INSERT INTO allowed_accounts(user_id, insta_handle) VALUES(:u,:h)"), {"u": uid, "h": handle})
+        await s.commit()
+    await update.message.reply_text(f"✅ Linked @{handle} to {uid}")
+
+@debug_handler
+async def removeaccount(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("🚫 Unauthorized")
+    if len(context.args) != 1:
+        return await update.message.reply_text("Usage: /removeaccount <user_id>")
+    uid = int(context.args[0])
+    async with AsyncSessionLocal() as s:
+        await s.execute(text("DELETE FROM allowed_accounts WHERE user_id=:u"), {"u": uid})
+        await s.commit()
+    await update.message.reply_text(f"🗑️ Unlinked {uid}")
+
+@debug_handler
 async def addreel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         return await update.message.reply_text("❗ Provide a reel link.")
@@ -195,38 +219,192 @@ async def addreel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     await update.message.reply_text("✅ Reel added!")
 
-# ... rest of the handlers remain the same ...
+@debug_handler
+async def removereel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    raw = context.args[0] if context.args else None
+    if not raw:
+        return await update.message.reply_text("❗ Provide shortcode or URL.")
+    m = re.search(r"instagram\.com/reel/(?P<code>[^/?#&]+)", raw)
+    code = m.group("code") if m else raw
+    uid = update.effective_user.id
+    async with AsyncSessionLocal() as s:
+        await s.execute(text("DELETE FROM reels WHERE shortcode=:c AND user_id=:u"), {"c": code, "u": uid})
+        await s.commit()
+    await update.message.reply_text("🗑️ Reel removed.")
+
+@debug_handler
+async def clearreels(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("🚫 Unauthorized")
+    async with AsyncSessionLocal() as s:
+        await s.execute(text("DELETE FROM reels"))
+        await s.commit()
+    await update.message.reply_text("✅ All reels cleared.")
+
+@debug_handler
+async def addviews(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("🚫 Unauthorized")
+    if len(context.args) != 2:
+        return await update.message.reply_text("Usage: /addviews <user_id> <views>")
+    tid, v = map(int, context.args)
+    async with AsyncSessionLocal() as s:
+        exists = (await s.execute(text("SELECT 1 FROM users WHERE user_id=:u"), {"u": tid})).scalar()
+        if exists:
+            await s.execute(text("UPDATE users SET total_views=total_views+:v WHERE user_id=:u"), {"v": v, "u": tid})
+        else:
+            await s.execute(text("INSERT INTO users(user_id,username,total_views) VALUES(:u,NULL,:v)"), {"u": tid, "v": v})
+        await s.commit()
+    await update.message.reply_text(f"✅ Added {v} views to {tid}")
+
+@debug_handler
+async def removeviews(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("🚫 Unauthorized")
+    if len(context.args) != 2:
+        return await update.message.reply_text("Usage: /removeviews <user_id> <views>")
+    tid, v = map(int, context.args)
+    async with AsyncSessionLocal() as s:
+        await s.execute(text("UPDATE users SET total_views=GREATEST(total_views-:v,0) WHERE user_id=:u"), {"v": v, "u": tid})
+        await s.commit()
+    await update.message.reply_text(f"✅ Removed {v} views from {tid}")
+
+@debug_handler
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    async with AsyncSessionLocal() as s:
+        total_videos = (await s.execute(text("SELECT COUNT(*) FROM reels WHERE user_id=:u"), {"u": uid})).scalar() or 0
+        row = (await s.execute(text("SELECT total_views FROM users WHERE user_id=:u"), {"u": uid})).fetchone()
+        total_views = row[0] if row else 0
+        reels = [r[0] for r in (await s.execute(text("SELECT shortcode FROM reels WHERE user_id=:u"), {"u": uid})).fetchall()]
+        handles = [r[0] for r in (await s.execute(text("SELECT insta_handle FROM allowed_accounts WHERE user_id=:u"), {"u": uid})).fetchall()]
+    msg = [
+        f"📊 <b>Your Stats</b>",
+        f"• Total vids: <b>{total_videos}</b>",
+        f"• Total views: <b>{total_views}</b>",
+    ]
+    if handles:
+        msg.append("👤 <b>Linked Instagram:</b>")
+        msg += [f"• @{h}" for h in handles]
+    if reels:
+        msg.append("🎥 <b>Your Reel Links:</b>")
+        msg += [f"• https://www.instagram.com/reel/{sc}/" for sc in reels]
+    await update.message.reply_text("\n".join(msg), parse_mode=ParseMode.HTML)
+
+@debug_handler
+async def userstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("🚫 Unauthorized")
+    if len(context.args) != 1:
+        return await update.message.reply_text("Usage: /userstats <user_id>")
+    tid = int(context.args[0])
+    try:
+        chat = await context.bot.get_chat(tid)
+        full_name = " ".join(filter(None, [chat.first_name, chat.last_name]))
+    except:
+        full_name = str(tid)
+    async with AsyncSessionLocal() as s:
+        row = (await s.execute(text("SELECT total_views FROM users WHERE user_id=:u"), {"u": tid})).fetchone()
+        views = row[0] if row else 0
+        reels = [r[0] for r in (await s.execute(text("SELECT shortcode FROM reels WHERE user_id=:u"), {"u": tid})).fetchall()]
+        acc = (await s.execute(text("SELECT insta_handle FROM allowed_accounts WHERE user_id=:u"), {"u": tid})).fetchone()
+        handle = acc[0] if acc else "—"
+    msg = [
+        f"📊 <b>Stats for {full_name} (@{handle})</b>",
+        f"• Total views: <b>{views}</b>",
+        "🎥 <b>Reels:</b>",
+    ] + [f"• https://www.instagram.com/reel/{sc}/" for sc in reels]
+    await update.message.reply_text("\n".join(msg), parse_mode=ParseMode.HTML)
+
+@debug_handler
+async def allstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("🚫 Unauthorized")
+    async with AsyncSessionLocal() as s:
+        uids = [r[0] for r in (await s.execute(text("SELECT DISTINCT user_id FROM reels"))).fetchall()]
+    for uid in uids:
+        try:
+            chat = await context.bot.get_chat(uid)
+            full_name = " ".join(filter(None, [chat.first_name, chat.last_name]))
+        except:
+            full_name = str(uid)
+        reels = [r[0] for r in (await s.execute(text("SELECT shortcode FROM reels WHERE user_id=:u"), {"u": uid})).fetchall()]
+        acc = (await s.execute(text("SELECT insta_handle FROM allowed_accounts WHERE user_id=:u"), {"u": uid})).fetchone()
+        handle = acc[0] if acc else "—"
+        msg = [
+            f"👤 <b>{full_name} (@{handle})</b>",
+            "🎥 <b>Reels:</b>",
+        ] + [f"• https://www.instagram.com/reel/{sc}/" for sc in reels]
+        await context.bot.send_message(update.effective_chat.id, "\n".join(msg), parse_mode=ParseMode.HTML)
+
+@debug_handler
+async def broadcast_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("🚫 Unauthorized")
+    if not context.args:
+        return await update.message.reply_text("Usage: /broadcast_all <message>")
+    message = " ".join(context.args)
+    async with AsyncSessionLocal() as s:
+        uids = [r[0] for r in (await s.execute(text("SELECT DISTINCT user_id FROM allowed_accounts"))).fetchall()]
+    for uid in uids:
+        try:
+            await context.bot.send_message(uid, message)
+        except Exception as e:
+            logger.warning(f"Broadcast to {uid} failed: {e}")
+    await update.message.reply_text("✅ Broadcast sent.", parse_mode=ParseMode.HTML)
+
+@debug_handler
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("🚫 Unauthorized")
+    if len(context.args) < 2:
+        return await update.message.reply_text("Usage: /broadcast <user_id> <message>")
+    tid = int(context.args[0]); message = " ".join(context.args[1:])
+    try:
+        await context.bot.send_message(tid, message)
+        await update.message.reply_text("✅ Message sent.", parse_mode=ParseMode.HTML)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Failed: {e}")
+
+@debug_handler
+async def exportstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("🚫 Unauthorized")
+    async with AsyncSessionLocal() as s:
+        users = (await s.execute(text(
+            "SELECT u.user_id,u.username,u.total_views,a.insta_handle "
+            "FROM users u LEFT JOIN allowed_accounts a ON u.user_id=a.user_id"
+        ))).fetchall()
+        reels = (await s.execute(text("SELECT user_id,shortcode FROM reels"))).fetchall()
+    lines = []
+    for uid, uname, views, insta in users:
+        acct = f"@{insta}" if insta else "—"
+        lines.append(f"User {uid} ({uname or '—'}), Views: {views}, Insta: {acct}")
+        for u, sc in reels:
+            if u == uid:
+                lines.append(f"  • https://www.instagram.com/reel/{sc}/")
+        lines.append("")
+    import io
+    buf = io.BytesIO("\n".join(lines).encode()); buf.name = "stats.txt"
+    await update.message.reply_document(document=buf, filename="stats.txt")
 
 async def run_bot():
-    # Initialize database
     await init_db()
-    
-    # Start health check server
     asyncio.create_task(start_health_check_server())
-    
-    # Start bot
     app = ApplicationBuilder().token(TOKEN).build()
-    
-    # Add handlers
-    app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(CommandHandler("addreel", addreel))
-    app.add_handler(CommandHandler("removelink", removereel))
-    app.add_handler(CommandHandler("stats", stats))
-    
-    if ADMIN_IDS:
-        app.add_handler(CommandHandler("addaccount", addaccount))
-        app.add_handler(CommandHandler("removeaccount", removeaccount))
-        app.add_handler(CommandHandler("userstats", userstats))
-        app.add_handler(CommandHandler("allstats", allstats))
-        app.add_handler(CommandHandler("broadcast_all", broadcast_all))
-        app.add_handler(CommandHandler("broadcast", broadcast))
-        app.add_handler(CommandHandler("clearreels", clearreels))
-        app.add_handler(CommandHandler("addviews", addviews))
-        app.add_handler(CommandHandler("removeviews", removeviews))
-        app.add_handler(CommandHandler("exportstats", exportstats))
-    
-    # Start polling
-    await app.run_polling()
+    handlers = [
+        ("start", start_cmd), ("addaccount", addaccount), ("removeaccount", removeaccount),
+        ("addreel", addreel), ("removelink", removereel), ("clearreels", clearreels),
+        ("addviews", addviews), ("removeviews", removeviews), ("stats", stats),
+        ("userstats", userstats), ("allstats", allstats),
+        ("broadcast_all", broadcast_all), ("broadcast", broadcast),
+        ("exportstats", exportstats),
+    ]
+    for cmd, h in handlers:
+        app.add_handler(CommandHandler(cmd, h))
+    await app.initialize(); await app.start()
+    await app.updater.start_polling(drop_pending_updates=True)
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
     asyncio.run(run_bot()) 
